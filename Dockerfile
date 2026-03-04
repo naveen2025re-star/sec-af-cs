@@ -14,9 +14,10 @@ COPY pyproject.toml README.md ./
 COPY src/ src/
 
 RUN pip install --no-cache-dir --prefix=/install \
-    "agentfield @ git+https://github.com/Agent-Field/agentfield.git#subdirectory=sdk/python" \
+    "agentfield @ git+https://github.com/Agent-Field/agentfield.git@fix/harness-provider-error-context#subdirectory=sdk/python" \
     "pydantic>=2.0" \
-    "httpx>=0.27" && \
+    "httpx>=0.27" \
+    "python-dotenv>=1.0" && \
     pip install --no-cache-dir --prefix=/install --no-deps .
 
 
@@ -26,8 +27,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     AGENTFIELD_SERVER=http://agentfield:8080 \
     HARNESS_PROVIDER=opencode \
-    HARNESS_MODEL=moonshotai/kimi-k2.5 \
-    AI_MODEL=moonshotai/kimi-k2.5 \
+    HARNESS_MODEL=openrouter/moonshotai/kimi-k2.5 \
+    AI_MODEL=openrouter/moonshotai/kimi-k2.5 \
     PORT=8003 \
     HOME=/home/secaf \
     PYTHONPATH=/app/src \
@@ -45,6 +46,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     mkdir -p /workspaces && \
     chown -R secaf:secaf /app /workspaces /home/secaf && \
     rm -rf /var/lib/apt/lists/*
+
+# Generate minimal opencode config for OpenRouter provider
+RUN mkdir -p /home/secaf/.config/opencode && \
+    echo '{"$schema":"https://opencode.ai/config.json","model":"openrouter/moonshotai/kimi-k2.5","small_model":"openrouter/moonshotai/kimi-k2.5","provider":{"openrouter":{"options":{"apiKey":"{env:OPENROUTER_API_KEY}"},"models":{"moonshotai/kimi-k2.5":{},"minimax/minimax-m2.5":{},"deepseek/deepseek-chat-v3-0324":{}}}}}' \
+    > /home/secaf/.config/opencode/opencode.json && \
+    chown -R secaf:secaf /home/secaf/.config
 
 COPY --from=builder /install /usr/local
 COPY src/ /app/src/
