@@ -36,6 +36,7 @@ app = Agent(
     version="0.1.0",
     description="AI-Native Security Analysis and Red-Teaming Agent",
     agentfield_server=os.getenv("AGENTFIELD_SERVER", "http://localhost:8080"),
+    callback_url=os.getenv("AGENT_CALLBACK_URL", "http://127.0.0.1:8003"),
     api_key=os.getenv("AGENTFIELD_API_KEY"),
     harness_config=HarnessConfig(
         provider=_ai_config.provider,
