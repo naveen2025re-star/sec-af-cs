@@ -1,15 +1,19 @@
 # SEC-AF — AI-Native Security Analysis Platform on AgentField
 
-> **Status**: Design Proposal  
+> **Status**: Design Proposal (v2 — REST API Agent Architecture)  
 > **Author**: Architecture brainstorm  
-> **Scope**: Standalone product built on AgentField harness  
-> **Date**: 2026-03-04
+> **Scope**: REST API agent built on AgentField (.ai + harness)  
+> **Date**: 2026-03-04 (updated)
 
 ---
 
 ## 1. Overview
 
-SEC-AF is an open-source, AI-native security analysis and red-teaming platform built on AgentField's harness infrastructure. It performs deep security audits of codebases through a three-phase **Signal Cascade** pipeline: reconnaissance, vulnerability hunting, and adversarial exploit verification.
+SEC-AF is an open-source, AI-native security analysis and red-teaming platform built on AgentField. It runs as a **REST API agent** — users trigger audits via the AgentField control plane (curl / automation), not a CLI. It performs deep security audits of codebases through a three-phase **Signal Cascade** pipeline: reconnaissance, vulnerability hunting, and adversarial exploit verification.
+
+SEC-AF leverages two AgentField primitives:
+- **`.harness()`** — Spawns coding agents with file access for complex multi-turn analysis (RECON, HUNT, PROVE, dedup, scoring, correlation). Writes structured output to file with multi-turn iteration. The workhorse.
+- **`.ai()`** — Direct LLM calls for simple, fast decisions (yes/no gates, severity classification, strategy selection). Flat schemas only (3-5 fields max).
 
 **What SEC-AF is**: An AI-powered security analysis tool that produces verified findings with evidence — acting like a team of parallel security researchers analyzing your codebase simultaneously.
 
@@ -45,16 +49,102 @@ SEC-AF is the first tool to combine **all three** of these capabilities in a sin
 | **Transparent scoring** | Opaque proprietary formulas | ✅ Published composite formula |
 | **Open source** | All agentic tools are proprietary | ✅ Open source, provider-agnostic |
 
-### 2.3 Why AgentField Harness
+### 2.3 Why AgentField
 
-AgentField's harness infrastructure provides the foundation that makes SEC-AF possible:
+AgentField provides two complementary primitives that make SEC-AF possible:
 
+**`.harness()` — Complex Multi-Turn Analysis (the workhorse)**
 - **Provider-agnostic**: Run security agents on Claude Code, Codex, Gemini CLI, or OpenCode — swap providers without code changes
-- **Parallel execution**: Harness natively supports concurrent agent invocations — essential for running 20+ hunt agents and N provers simultaneously
-- **Schema-constrained output**: Harness enforces structured output via Pydantic/Zod schemas — every agent returns typed, validated data
-- **Retry and recovery**: Built-in retry logic with backoff handles transient failures in long-running security scans
-- **Cost tracking**: Per-invocation metrics enable cost attribution and budget enforcement across phases
+- **Multi-turn iteration**: Agents can take multiple turns to explore code, build analysis, and produce complex structured JSON output via file-write pattern (`{cwd}/.agentfield_output.json`)
+- **Parallel execution**: Natively supports concurrent agent invocations — essential for running 20+ hunt agents and N provers simultaneously
+- **Schema-constrained output**: Enforces structured output via Pydantic schemas with 4-layer recovery (parse → cosmetic repair → follow-up → retry)
+- **Retry and recovery**: Built-in retry logic with backoff handles transient failures
+- **Cost tracking**: Per-invocation metrics enable cost attribution and budget enforcement
+
+**`.ai()` — Simple Fast Decisions (the gate)**
+- **Sub-second responses**: Direct LLM calls for binary/categorical decisions
+- **Massively parallel**: 100+ concurrent `.ai()` calls for batch classification
+- **Flat schemas only**: Keep Pydantic schemas ≤ 3 levels deep, 3-5 fields. No complex nested models.
+- **Single-shot**: No multi-turn, no file access. If the answer needs reasoning over code, use `.harness()` instead.
+
+**Shared Infrastructure:**
 - **Cryptographic audit trail**: AgentField's VC chain provides tamper-proof evidence of what each agent did — critical for compliance reporting
+- **Agent-to-agent communication**: SEC-AF registers as an AgentField agent; users trigger via `POST /api/v1/execute/async/sec-af.audit`
+- **Discovery**: Control plane exposes SEC-AF's input schema and capabilities via `/api/v1/discovery/capabilities`
+
+### 2.4 `.ai()` vs `.harness()` Routing Strategy
+
+The routing decision is based on **output complexity**, not whether file access is needed:
+
+| Use `.harness()` when... | Use `.ai()` when... |
+|---|---|
+| Output requires complex structured JSON (nested models, lists of findings) | Output is a simple yes/no, enum, or flat 3-5 field schema |
+| Analysis requires multi-turn reasoning over multiple signals | Decision is a single classification or gate |
+| Input context is very large (full RECON results + code) | Input is a short question with small context |
+| Task requires exploring files or reading code | Task is pure reasoning over provided data |
+| Accuracy is critical (findings, verdicts, evidence) | Speed is critical (batch filtering) |
+
+**Routing table for SEC-AF components:**
+
+| Component | Method | Rationale |
+|---|---|---|
+| RECON agents (5) | `.harness()` | Complex analysis + file access + structured output |
+| HUNT agents (8-20+) | `.harness()` | Complex vulnerability discovery + code reading |
+| PROVE agents (N) | `.harness()` | Complex exploit verification + evidence building |
+| Deduplicator/Correlator | `.harness()` | Complex reasoning across many findings |
+| Scoring (exploitability) | `.harness()` | Multi-factor analysis with structured output |
+| Chain correlation | `.harness()` | Complex graph reasoning across findings |
+| Compliance mapping | `.harness()` | Detailed control-to-finding analysis |
+| "Is this finding a false positive?" | `.ai()` | Simple yes/no + short rationale |
+| "Classify severity: critical/high/medium/low" | `.ai()` | Single categorical answer |
+| "Does this file contain auth logic?" | `.ai()` | Simple boolean gate |
+| Strategy selection (pick hunt strategies) | `.ai()` | Simple choice from options |
+| Output generation (SARIF, JSON) | Code (no LLM) | Template-based data transformation |
+
+### 2.5 Schema Design Constraints
+
+**For `.harness()` calls (complex output):**
+- Output is written to `{cwd}/.agentfield_output.json` by the coding agent
+- For large schemas (>4K tokens), schema is written to `{cwd}/.agentfield_schema.json` — agent reads it from file
+- **Multi-turn prompting**: Always instruct the agent that it can take multiple turns to build the output incrementally. Do NOT expect complex JSON in a single turn.
+- Recovery: Layer 1 (parse) → Layer 2 (cosmetic repair: strip fences, fix commas, close brackets) → Layer 3 (follow-up prompt) → Layer 4 (full retry)
+- Pydantic models can be deeply nested — the file-write pattern handles this
+
+```python
+# Example: prompting harness for multi-turn complex output
+prompt = """
+You are analyzing this codebase for injection vulnerabilities.
+
+IMPORTANT: This output is complex. You may take multiple turns:
+1. First, explore the codebase and gather evidence
+2. Build your analysis incrementally
+3. Write the final JSON to {output_path} only when complete
+4. Ensure the JSON is well-formed before finalizing
+
+{task_details}
+"""
+result = await app.harness(prompt, schema=HuntFindings, cwd=repo_path)
+```
+
+**For `.ai()` calls (simple output):**
+- Schema is embedded inline in the system prompt — keep it small
+- Max 2-3 levels of nesting, 3-5 fields
+- Single-shot: no recovery, no multi-turn
+- If JSON parse fails, only fallback is regex extraction
+
+```python
+# ✅ GOOD: Flat schema for .ai()
+class SeverityClassification(BaseModel):
+    severity: str       # "critical" | "high" | "medium" | "low"
+    confidence: float   # 0.0-1.0
+    rationale: str      # Short explanation
+
+# ❌ BAD: Too complex for .ai()
+class FullFindingAnalysis(BaseModel):
+    findings: list[Finding]         # Nested with evidence, data flows...
+    attack_chains: list[AttackChain]
+    compliance: list[ComplianceMapping]
+```
 
 ---
 
@@ -63,7 +153,8 @@ AgentField's harness infrastructure provides the foundation that makes SEC-AF po
 SEC-AF uses a three-phase **Signal Cascade** architecture. Each phase narrows the signal: RECON builds context, HUNT discovers potential vulnerabilities, PROVE verifies exploitability. Only verified findings reach the output.
 
 ```
-Input: Repository path + configuration
+Input: REST API request → POST /api/v1/execute/async/sec-af.audit
+       { repo_url, branch, depth, severity_threshold, output_formats, ... }
   │
   ▼
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -226,32 +317,55 @@ class SecurityContext(BaseModel):
 
 ### 4.4 Execution
 
-All 5 RECON agents run in parallel via harness. The Architecture Mapper runs first (others can start concurrently but benefit from its output). Total RECON phase should complete in 30-90 seconds depending on codebase size.
+All 5 RECON agents run in parallel via `app.harness()`. The Architecture Mapper runs first (others can start concurrently but benefit from its output). Total RECON phase should complete in 30-90 seconds depending on codebase size.
+
+Each agent uses `.harness()` because RECON requires file access AND produces complex structured output. Multi-turn prompting ensures agents can explore the codebase thoroughly before writing their analysis.
 
 ```python
-# Pseudocode — actual implementation uses harness
-async def recon(repo_path: str, config: SecAFConfig) -> ReconResult:
-    # Architecture Mapper runs first (or concurrently — agents handle partial context)
+# Pseudocode — uses app.harness() for complex multi-turn analysis with file access
+async def recon(repo_path: str, config: AuditConfig) -> ReconResult:
+    # Architecture Mapper, Dep Auditor, Config Scanner run concurrently
     arch, deps, config_report = await asyncio.gather(
-        harness("Map the architecture...", schema=ArchitectureMap, cwd=repo_path),
-        harness("Audit all dependencies...", schema=DependencyReport, cwd=repo_path),
-        harness("Scan all configuration...", schema=ConfigReport, cwd=repo_path),
+        app.harness(
+            "Map the architecture of this codebase. Take multiple turns: "
+            "first explore the directory structure, then identify modules, "
+            "entry points, and trust boundaries. Write final JSON only when complete.",
+            schema=ArchitectureMap, cwd=repo_path,
+        ),
+        app.harness(
+            "Audit all dependencies. Read package manifests, check for known CVEs. "
+            "Take multiple turns to build a complete SBOM.",
+            schema=DependencyReport, cwd=repo_path,
+        ),
+        app.harness(
+            "Scan all configuration files for security issues. "
+            "Explore config files, env files, deployment configs.",
+            schema=ConfigReport, cwd=repo_path,
+        ),
     )
     
     # Data Flow and Security Context benefit from Architecture Map
     data_flows, sec_ctx = await asyncio.gather(
-        harness(f"Given this architecture: {arch}\nTrace all data flows...", 
-                schema=DataFlowMap, cwd=repo_path),
-        harness(f"Given this architecture: {arch}\nProfile security context...", 
-                schema=SecurityContext, cwd=repo_path),
+        app.harness(
+            f"Given this architecture:\n{arch.model_dump_json()}\n\n"
+            "Trace all data flows from user input to security-critical sinks. "
+            "Take multiple turns to follow each flow path through the code.",
+            schema=DataFlowMap, cwd=repo_path,
+        ),
+        app.harness(
+            f"Given this architecture:\n{arch.model_dump_json()}\n\n"
+            "Profile the security context: auth model, crypto usage, "
+            "framework security features.",
+            schema=SecurityContext, cwd=repo_path,
+        ),
     )
     
     return ReconResult(
-        architecture=arch,
-        data_flows=data_flows,
-        dependencies=deps,
-        config=config_report,
-        security_context=sec_ctx,
+        architecture=arch.parsed,
+        data_flows=data_flows.parsed,
+        dependencies=deps.parsed,
+        config=config_report.parsed,
+        security_context=sec_ctx.parsed,
     )
 ```
 
@@ -408,33 +522,48 @@ class PotentialChain(BaseModel):
 
 ### 5.6 Execution
 
-All selected hunters run in parallel via harness. Each hunter receives the full `ReconResult` as context.
+All selected hunters run in parallel via `app.harness()`. Each hunter receives the full `ReconResult` as context.
 
+**Strategy selection** uses `.ai()` (simple categorical decision):
 ```python
-async def hunt(recon: ReconResult, config: SecAFConfig) -> HuntResult:
-    strategies = select_strategies(recon, config.depth)
+# .ai() — simple decision: which strategies apply?
+selected = await app.ai(
+    user=f"Given this recon summary, which hunt strategies apply?\n{recon_summary}",
+    schema=StrategySelection,  # Flat: { strategies: list[str], rationale: str }
+)
+```
+
+**Hunting** uses `.harness()` (complex analysis with file access):
+```python
+async def hunt(recon: ReconResult, config: AuditConfig) -> HuntResult:
+    strategies = await select_strategies(recon, config.depth)  # .ai() call
     
-    # Run all hunters in parallel
+    # Run all hunters in parallel via .harness() — each needs file access
+    # and produces complex structured findings
     hunter_results = await asyncio.gather(*[
-        harness(
+        app.harness(
             build_hunter_prompt(strategy, recon),
-            schema=list[RawFinding],
+            schema=HunterFindings,  # Complex: list of findings with evidence
             cwd=config.repo_path,
         )
         for strategy in strategies
     ])
     
     # Flatten all findings
-    all_findings = [f for result in hunter_results for f in result]
+    all_findings = [f for result in hunter_results for f in result.parsed.findings]
     
-    # Deduplicate and correlate
-    deduped = await harness(
-        f"Deduplicate and correlate these {len(all_findings)} findings...",
+    # Deduplicate and correlate via .harness() — complex reasoning across
+    # many findings, needs to understand relationships and build chains
+    deduped = await app.harness(
+        f"Deduplicate and correlate these {len(all_findings)} findings. "
+        "Take multiple turns: first group duplicates, then identify attack chains, "
+        "then produce the final deduplicated result.\n\n"
+        f"Findings:\n{json.dumps([f.model_dump() for f in all_findings])}",
         schema=HuntResult,
         cwd=config.repo_path,
     )
     
-    return deduped
+    return deduped.parsed
 ```
 
 ---
@@ -586,13 +715,13 @@ class ChainStep(BaseModel):
 
 ### 6.5 Prover Execution
 
-Each prover runs independently and in parallel. High-severity findings are verified first.
+Each prover runs independently and in parallel via `app.harness()`. High-severity findings are verified first. Provers produce complex evidence — multi-turn iteration is essential.
 
 ```python
 async def prove(
     hunt_result: HuntResult, 
     recon: ReconResult, 
-    config: SecAFConfig,
+    config: AuditConfig,
 ) -> list[VerifiedFinding]:
     # Sort by severity × confidence (verify most important first)
     sorted_findings = sort_by_priority(hunt_result.findings)
@@ -601,20 +730,28 @@ async def prove(
     if config.max_provers:
         sorted_findings = sorted_findings[:config.max_provers]
     
-    # Run all provers in parallel
+    # Run all provers in parallel via .harness() — each needs to:
+    # 1. Read the actual code at the finding location
+    # 2. Trace data flows through multiple files
+    # 3. Build complex evidence (Proof schema with nested models)
+    # 4. Produce a verdict with detailed rationale
     verified = await asyncio.gather(*[
-        harness(
-            build_prover_prompt(finding, recon),
+        app.harness(
+            build_prover_prompt(finding, recon)
+            + "\n\nIMPORTANT: Take multiple turns. First read the code, "
+            "then trace the data flow, then analyze sanitization, "
+            "then build your verdict with evidence. Write final JSON "
+            "only when your analysis is complete.",
             schema=VerifiedFinding,
             cwd=config.repo_path,
         )
         for finding in sorted_findings
     ])
     
-    # Also verify potential chains
+    # Also verify potential chains via .harness()
     if hunt_result.chains:
         chain_results = await asyncio.gather(*[
-            harness(
+            app.harness(
                 build_chain_prover_prompt(chain, hunt_result.findings, recon),
                 schema=VerifiedChain,
                 cwd=config.repo_path,
@@ -623,7 +760,7 @@ async def prove(
         ])
         # Merge chain results into verified findings
     
-    return verified
+    return [v.parsed for v in verified if not v.is_error]
 ```
 
 ### 6.6 Depth-First Expansion
@@ -987,81 +1124,142 @@ sanitization. A payload of `1; DROP TABLE users--` would execute arbitrary SQL.
 
 ## 8. Developer Experience
 
-### 8.1 CLI
+### 8.1 REST API (Primary Interface)
+
+SEC-AF is a REST API agent running on AgentField. Users trigger audits via the control plane:
 
 ```bash
-# Basic audit
-sec-af audit /path/to/repo
+# Minimal — just a repo URL
+curl -X POST http://control-plane:8080/api/v1/execute/async/sec-af.audit \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $AGENTFIELD_API_KEY" \
+  -d '{
+    "input": {
+      "repo_url": "https://github.com/org/repo"
+    }
+  }'
 
-# With depth profile
-sec-af audit /path/to/repo --depth thorough
+# Full configuration — mirrors what security firms ask
+curl -X POST http://control-plane:8080/api/v1/execute/async/sec-af.audit \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $AGENTFIELD_API_KEY" \
+  -d '{
+    "input": {
+      "repo_url": "https://github.com/org/repo",
+      "branch": "main",
+      "commit_sha": "abc123def",
+      "depth": "standard",
+      "severity_threshold": "medium",
+      "scan_types": ["sast", "sca", "secrets", "config"],
+      "output_formats": ["sarif", "json"],
+      "compliance_frameworks": ["pci-dss", "soc2", "owasp"],
+      "include_paths": ["src/", "lib/"],
+      "exclude_paths": ["tests/", "vendor/", "node_modules/"],
+      "max_cost_usd": 10.0,
+      "max_provers": 30
+    },
+    "webhook": {
+      "url": "https://your-ci.com/sec-af/complete",
+      "secret": "your-webhook-secret"
+    }
+  }'
+# Returns: 202 Accepted with { "execution_id": "exec_...", "status": "queued" }
 
-# Output SARIF only
-sec-af audit /path/to/repo --output sarif --output-file results.sarif
-
-# Create GitHub Issues for confirmed findings
-sec-af audit /path/to/repo --github-issues --severity-threshold high
-
-# Use specific provider
-sec-af audit /path/to/repo --provider claude-code --model opus
-
-# JSON output
-sec-af audit /path/to/repo --output json --output-file results.json
-
-# Budget cap (stop after N dollars)
-sec-af audit /path/to/repo --max-cost 10.00
-
-# Max provers (limit parallel verification)
-sec-af audit /path/to/repo --max-provers 20
+# Poll for results
+curl http://control-plane:8080/api/v1/executions/{execution_id} \
+  -H "X-API-Key: $AGENTFIELD_API_KEY"
+# Returns: { "status": "succeeded", "result": { SecurityAuditResult } }
 ```
 
-### 8.2 Python SDK
+### 8.2 Input Schema (What Users Provide)
+
+Based on competitive analysis of Nullify, Snyk, Semgrep, Aikido, and Endor Labs:
 
 ```python
-from sec_af import SecurityAudit, AuditConfig, DepthProfile
+class AuditInput(BaseModel):
+    """Input schema for the SEC-AF audit reasoner."""
+    
+    # Target (required)
+    repo_url: str                                   # Git clone URL
+    
+    # Scan scope (optional — sensible defaults)
+    branch: str = "main"
+    commit_sha: str | None = None                   # Defaults to HEAD
+    base_commit_sha: str | None = None              # For diff-aware PR scanning
+    include_paths: list[str] | None = None          # Monorepo scoping
+    exclude_paths: list[str] = ["tests/", "vendor/", "node_modules/", ".git/"]
+    
+    # Scan configuration
+    depth: str = "standard"                         # "quick" | "standard" | "thorough"
+    scan_types: list[str] = ["sast", "sca", "secrets", "config"]
+    severity_threshold: str = "low"                 # Minimum severity to report
+    compliance_frameworks: list[str] = []           # ["pci-dss", "soc2", "owasp", "hipaa"]
+    
+    # Output
+    output_formats: list[str] = ["json"]            # ["sarif", "json"]
+    
+    # Budget
+    max_cost_usd: float | None = None               # Hard cost cap
+    max_provers: int | None = None                  # Limit parallel verification
+    max_duration_seconds: int | None = None         # Time cap
+    
+    # PR mode (optional)
+    is_pr: bool = False
+    pr_id: str | None = None
+    post_pr_comments: bool = False
+    fail_on_findings: bool = False                  # Return non-zero for CI gating
 
-# Simple usage
-result = await SecurityAudit.run(
-    repo_path="/path/to/repo",
-    provider="claude-code",
-)
-
-# Full configuration
-config = AuditConfig(
-    repo_path="/path/to/repo",
-    depth=DepthProfile.THOROUGH,
-    provider="claude-code",
-    model="opus",
-    max_cost_usd=10.0,
-    max_provers=20,
-    severity_threshold="medium",
-    output_formats=["sarif", "json"],
-    github_issues=True,
-    github_token="ghp_...",
-    compliance_frameworks=["pci-dss", "soc2"],
-)
-
-result: SecurityAuditResult = await SecurityAudit.run(config)
-
-# Access findings
-for finding in result.findings:
-    if finding.verdict == "confirmed":
-        print(f"[{finding.severity}] {finding.title}")
-        print(f"  Evidence: {finding.proof.exploit_hypothesis}")
-        print(f"  Score: {finding.exploitability_score}/10")
-
-# Export SARIF
-with open("results.sarif", "w") as f:
-    f.write(result.sarif)
-
-# Summary
-print(f"Scanned in {result.duration_seconds:.1f}s")
-print(f"Found {result.confirmed} confirmed, {result.likely} likely issues")
-print(f"Noise reduction: {result.noise_reduction_pct:.0f}%")
-print(f"Cost: ${result.cost_usd:.2f}")
+class AuditOutput(BaseModel):
+    """Wrapper returned by the audit reasoner."""
+    result: SecurityAuditResult
+    sarif: str | None = None                        # SARIF 2.1.0 JSON string
+    execution_metadata: ExecutionMetadata
 ```
 
-### 8.3 GitHub Actions Integration
+### 8.3 Agent Registration (How SEC-AF Runs)
+
+```python
+from agentfield import Agent, AgentRouter
+import os
+
+NODE_ID = os.getenv("NODE_ID", "sec-af")
+
+app = Agent(
+    node_id=NODE_ID,
+    version="1.0.0",
+    description="AI-native security analysis and red-teaming agent",
+    agentfield_server=os.getenv("AGENTFIELD_SERVER", "http://localhost:8080"),
+    api_key=os.getenv("AGENTFIELD_API_KEY"),
+    harness_config=HarnessConfig(
+        provider=os.getenv("HARNESS_PROVIDER", "opencode"),
+        model=os.getenv("HARNESS_MODEL", "moonshotai/kimi-k2.5"),  # via OpenRouter
+        max_turns=50,
+    ),
+    ai_config=AIConfig(
+        model=os.getenv("AI_MODEL", "moonshotai/kimi-k2.5"),  # via OpenRouter
+    ),
+)
+
+router = AgentRouter(tags=["security", "audit", "red-team"])
+
+@router.reasoner()
+async def audit(input: AuditInput) -> dict:
+    """Run a full security audit on a repository.
+    
+    This is the main entry point. Users call:
+    POST /api/v1/execute/async/sec-af.audit
+    """
+    orchestrator = AuditOrchestrator(app)
+    result = await orchestrator.run(input)
+    return result.model_dump()
+
+app.include_router(router)
+
+def main():
+    app.run(port=int(os.getenv("PORT", "8003")), host="0.0.0.0")
+```
+
+### 8.4 GitHub Actions Integration
 
 ```yaml
 name: Security Audit
@@ -1076,15 +1274,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      # SEC-AF runs as a service — trigger via curl to control plane
       - name: Run SEC-AF Audit
-        uses: agentfield/sec-af-action@v1
-        with:
-          depth: standard
-          provider: claude-code
-          severity-threshold: medium
-          max-cost: 5.00
+        run: |
+          RESULT=$(curl -s -X POST $AGENTFIELD_SERVER/api/v1/execute/sec-af.audit \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $AGENTFIELD_API_KEY" \
+            -d '{
+              "input": {
+                "repo_url": "${{ github.event.repository.clone_url }}",
+                "branch": "${{ github.head_ref }}",
+                "commit_sha": "${{ github.event.pull_request.head.sha }}",
+                "base_commit_sha": "${{ github.event.pull_request.base.sha }}",
+                "depth": "standard",
+                "severity_threshold": "medium",
+                "output_formats": ["sarif"],
+                "is_pr": true,
+                "fail_on_findings": true
+              }
+            }')
+          echo "$RESULT" | jq -r '.result.sarif' > sec-af-results.sarif
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENTFIELD_SERVER: ${{ secrets.AGENTFIELD_SERVER }}
+          AGENTFIELD_API_KEY: ${{ secrets.AGENTFIELD_API_KEY }}
       
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -1204,35 +1416,41 @@ The majority of findings can be verified to `REACHABILITY_CONFIRMED` (level 3) o
 
 ### 12.1 Phase Transitions
 
+The `AuditOrchestrator` is called from the `@router.reasoner() async def audit()` function. It uses `app.harness()` for all complex analysis phases and `app.ai()` for simple gates.
+
 ```python
 class AuditOrchestrator:
-    async def run(self, config: AuditConfig) -> SecurityAuditResult:
-        # Phase 1: RECON
-        recon = await self.recon_phase(config)
+    def __init__(self, app: Agent):
+        self.app = app  # AgentField Agent instance — provides .ai() and .harness()
+    
+    async def run(self, config: AuditInput) -> SecurityAuditResult:
+        # Clone repo (or use provided path)
+        repo_path = await self.clone_repo(config.repo_url, config.branch)
+        
+        # Phase 1: RECON — all .harness() calls (complex analysis + file access)
+        recon = await self.recon_phase(repo_path, config)
         self.checkpoint("recon", recon)
         
-        # Phase 2: HUNT
-        hunt = await self.hunt_phase(recon, config)
+        # Strategy selection — .ai() call (simple categorical decision)
+        strategies = await self.select_strategies(recon, config)
+        
+        # Phase 2: HUNT — all .harness() calls (complex vuln discovery)
+        hunt = await self.hunt_phase(recon, strategies, repo_path, config)
         self.checkpoint("hunt", hunt)
         
-        # Phase 3: PROVE
-        verified = await self.prove_phase(hunt, recon, config)
+        # Phase 3: PROVE — all .harness() calls (complex exploit verification)
+        verified = await self.prove_phase(hunt, recon, repo_path, config)
         self.checkpoint("prove", verified)
         
-        # Output generation
+        # Output generation — pure code, no LLM (template-based transformation)
         return self.generate_output(verified, recon, hunt, config)
 ```
 
 ### 12.2 Checkpointing
 
-Each phase boundary is a checkpoint. If a scan is interrupted, it can resume from the last completed phase:
+Each phase boundary is a checkpoint. If a scan is interrupted, it can resume from the last completed phase. Checkpoint files are stored in the repo working directory and contain the serialized phase output (`ReconResult`, `HuntResult`, etc.).
 
-```bash
-# Resume from checkpoint
-sec-af audit /path/to/repo --resume .sec-af/checkpoint-hunt.json
-```
-
-Checkpoint files contain the serialized phase output (`ReconResult`, `HuntResult`, etc.).
+For resumption, a new audit request can include `resume_from_checkpoint: "hunt"` to skip completed phases.
 
 ### 12.3 Progress Reporting
 
@@ -1367,8 +1585,8 @@ Don't inflate findings. Don't suppress real vulnerabilities.
 - [x] 6-level evidence hierarchy
 - [x] SARIF 2.1.0 output (GitHub Code Scanning compatible)
 - [x] Rich JSON output
-- [x] CLI interface (`sec-af audit`)
-- [x] Python SDK
+- [x] REST API agent (`POST /api/v1/execute/async/sec-af.audit`)
+- [x] Optional CLI client (thin wrapper over REST API)
 - [x] Depth profiles (quick, standard, thorough)
 - [x] Budget enforcement (cost cap, prover cap)
 - [x] Compliance mapping (PCI-DSS, SOC2, OWASP Top 10)
@@ -1415,34 +1633,32 @@ sec-af/
 ├── src/
 │   └── sec_af/
 │       ├── __init__.py
-│       ├── audit.py               # Top-level SecurityAudit class
-│       ├── config.py              # AuditConfig, DepthProfile, BudgetConfig
-│       ├── orchestrator.py        # AuditOrchestrator — phase management
+│       ├── app.py                 # Agent entry point — @app.reasoner() registration
+│       ├── config.py              # AuditInput, DepthProfile, BudgetConfig, model config
+│       ├── orchestrator.py        # AuditOrchestrator — phase management, .ai()/.harness() routing
 │       ├── schemas/
 │       │   ├── __init__.py
-│       │   ├── recon.py           # ReconResult, ArchitectureMap, etc.
-│       │   ├── hunt.py            # RawFinding, HuntResult, etc.
-│       │   ├── prove.py           # VerifiedFinding, Verdict, Proof, etc.
-│       │   ├── output.py          # SecurityAuditResult, AttackChain, etc.
+│       │   ├── recon.py           # ReconResult, ArchitectureMap, etc. (harness schemas — can be complex)
+│       │   ├── hunt.py            # RawFinding, HuntResult, etc. (harness schemas)
+│       │   ├── prove.py           # VerifiedFinding, Verdict, Proof, etc. (harness schemas)
+│       │   ├── output.py          # SecurityAuditResult, AttackChain, etc. (harness schemas)
+│       │   ├── gates.py           # Simple .ai() schemas — flat, 3-5 fields max
 │       │   └── compliance.py      # ComplianceMapping, ComplianceGap, etc.
 │       ├── agents/
 │       │   ├── __init__.py
-│       │   ├── recon/             # RECON agent prompts and logic
-│       │   ├── hunt/              # HUNT strategy prompts and logic
-│       │   ├── prove/             # PROVE prover prompts and logic
-│       │   └── dedup.py           # Deduplicator/Correlator
+│       │   ├── recon/             # RECON agent prompts (.harness)
+│       │   ├── hunt/              # HUNT strategy prompts (.harness)
+│       │   ├── prove/             # PROVE prover prompts (.harness)
+│       │   └── dedup.py           # Deduplicator/Correlator (.harness)
 │       ├── output/
 │       │   ├── __init__.py
-│       │   ├── sarif.py           # SARIF 2.1.0 generator
-│       │   ├── json_output.py     # Rich JSON output
-│       │   ├── github_issues.py   # GitHub Issues creator
-│       │   └── report.py          # Summary report generator
-│       ├── compliance/
-│       │   ├── __init__.py
-│       │   └── mapping.py         # CWE → compliance framework lookup
-│       └── cli/
+│       │   ├── sarif.py           # SARIF 2.1.0 generator (pure code, no LLM)
+│       │   ├── json_output.py     # Rich JSON output (pure code, no LLM)
+│       │   ├── github_issues.py   # GitHub Issues creator (pure code)
+│       │   └── report.py          # Summary report generator (pure code)
+│       └── compliance/
 │           ├── __init__.py
-│           └── main.py            # CLI entry point
+│           └── mapping.py         # CWE → compliance framework lookup (pure code)
 ├── tests/
 │   ├── test_recon.py
 │   ├── test_hunt.py
@@ -1450,6 +1666,8 @@ sec-af/
 │   ├── test_sarif.py
 │   ├── test_scoring.py
 │   └── benchmarks/                # OWASP Benchmark, Juliet Test Suite
+├── Dockerfile                     # Agent container
+├── docker-compose.yml             # Agent + control plane
 ├── pyproject.toml
 ├── README.md
 └── LICENSE                        # Apache 2.0
@@ -1459,12 +1677,14 @@ sec-af/
 
 ## 16. Open Questions
 
-1. **Name**: SEC-AF vs SECURE-AF vs other? (SEC-AF is concise and follows the af-swe pattern)
-2. **Monorepo vs standalone**: Should this live in `int-agentfield-examples/sec-af/` or its own repo?
-3. **Harness v1 vs v2**: Should v1 target the current harness or wait for harness v2?
+1. ~~**Name**: SEC-AF vs SECURE-AF vs other?~~ **Resolved**: SEC-AF
+2. ~~**Monorepo vs standalone**?~~ **Resolved**: Standalone repo at https://github.com/Agent-Field/sec-af
+3. ~~**Harness v1 vs v2**?~~ **Resolved**: Using harness v2 API (new `app.harness()` / `app.ai()` pattern)
 4. **CVSS v4 computation**: Should provers compute CVSS v4 vectors, or should we use a simpler severity model and add CVSS later?
 5. **PoC execution in v1**: Should static reasoning only be the v1 default, or should we include basic test execution?
 6. **Pricing model**: If offered as a hosted service, per-audit pricing? Per-repo subscription? Pay-per-finding?
+7. **Model selection**: Default to `moonshotai/kimi-k2.5` or `minimax/minimax-m2.5` via OpenRouter? Make configurable via env var.
+8. **Private repo auth**: How to pass Git credentials for cloning private repos? (env var `GIT_TOKEN`? OAuth token in input?)
 
 ---
 
