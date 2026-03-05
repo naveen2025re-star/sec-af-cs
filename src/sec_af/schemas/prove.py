@@ -64,6 +64,14 @@ class ExploitHypothesis(BaseModel):
     expected_outcome: str = Field(description="What would happen if exploit succeeds")
 
 
+class RemediationSuggestion(BaseModel):
+    """Flat schema for AI-generated remediation. 3 fields."""
+
+    fix_description: str = Field(description="Natural language description of the fix")
+    patch_diff: str = Field(description="Unified diff format patch for the fix")
+    confidence: str = Field(description='One of: "high", "medium", "low"')
+
+
 class VerdictDecision(BaseModel):
     """Flat schema for verdict sub-agent. Uses .ai() not .harness(). 4 fields."""
 
@@ -224,6 +232,7 @@ class VerifiedFinding(BaseModel):
     enables: list[str] | None = None
     compliance: list[ComplianceMapping] = Field(default_factory=list)
     reproduction_steps: list[ReproductionStep] = Field(default_factory=list)
+    remediation: RemediationSuggestion | None = None
     sarif_rule_id: str
     sarif_security_severity: float
     drop_reason: str | None = None
