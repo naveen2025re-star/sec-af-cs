@@ -92,6 +92,27 @@ class CrossServiceFinding(BaseModel):
     impact: str = Field(description="Impact if the cross-service chain is exploited")
 
 
+class RegressionFinding(BaseModel):
+    """A finding that appeared since the baseline scan."""
+
+    finding_title: str
+    finding_id: str
+    severity: str
+    cwe_id: str
+    status: str = Field(description='One of: "new", "fixed", "unchanged"')
+
+
+class MonitoringResult(BaseModel):
+    """Result of comparing current scan against baseline."""
+
+    baseline_commit: str
+    current_commit: str
+    new_findings: list[RegressionFinding] = Field(default_factory=list)
+    fixed_findings: list[RegressionFinding] = Field(default_factory=list)
+    unchanged_count: int = 0
+    regression_detected: bool = False
+
+
 class SecurityAuditResult(BaseModel):
     """DESIGN.md §7.3 top-level SEC-AF audit output."""
 

@@ -57,3 +57,11 @@ class AuditInput(BaseModel):
         default_factory=list,
         description="Additional repository URLs for cross-service analysis",
     )
+    monitoring_mode: bool = Field(
+        default=False,
+        description="Enable continuous monitoring (compare against baseline)",
+    )
+    baseline_path: str | None = Field(
+        default=None,
+        description="Path to baseline scan results for regression detection",
+    )
