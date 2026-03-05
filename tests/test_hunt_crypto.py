@@ -58,8 +58,7 @@ async def test_crypto_hunter_prompt_includes_context_aware_risk_gating() -> None
     _ = await run_crypto_hunter(app=app, repo_path=".", recon=_recon_with_crypto_usage())
 
     assert "- Focus CWEs: CWE-326, CWE-327, CWE-328, CWE-330, CWE-916, CWE-259, CWE-321, CWE-798" in app.prompt
-    assert "Security-critical usage candidates" in app.prompt
-    assert "Non-security usage candidates" in app.prompt
+    assert "Prioritize weak crypto findings only when used in security-sensitive contexts" in app.prompt
     assert "file integrity checksum" in app.prompt
     assert "password hashing" in app.prompt
 
