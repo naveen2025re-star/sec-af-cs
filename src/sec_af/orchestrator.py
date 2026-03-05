@@ -14,7 +14,7 @@ from .agents.hunt import run_hunt
 from .agents.prove import run_prove
 from .agents.recon import extract_recon_findings, run_recon
 from .compliance.mapping import get_compliance_gaps, get_compliance_mappings, get_compliance_mappings_hybrid
-from .config import DepthProfile
+from .config import AuditConfig, DepthProfile
 from .harness import AIGateWrapper
 from .output.json_output import generate_json
 from .output.report import generate_report
@@ -48,7 +48,6 @@ class _PhaseHarnessProxy:
 
 
 class AuditOrchestrator:
-    _PHASE_BUDGETS: dict[str, float] = {"recon": 0.15, "hunt": 0.35, "prove": 0.50}
     _PHASE_ORDER: tuple[str, ...] = ("recon", "hunt", "prove")
 
     def __init__(self, app: Agent, input: AuditInput):
@@ -57,6 +56,8 @@ class AuditOrchestrator:
         self.started_at = time.monotonic()
         self.repo_path = Path(os.getenv("SEC_AF_REPO_PATH", os.getcwd())).resolve()
         self.checkpoint_dir = self.repo_path / ".sec-af"
+        self.config = AuditConfig.from_input(self.input, str(self.repo_path))
+        self.budget_config = self.config.budget
         self.max_cost_usd = input.max_cost_usd
         self.max_duration_seconds = input.max_duration_seconds
         self.total_cost_usd = 0.0
@@ -127,6 +128,8 @@ class AuditOrchestrator:
             repo_path=str(self.repo_path),
             recon_result=recon,
             depth=self.input.depth,
+            max_concurrent_hunters=self.budget_config.max_concurrent_hunters,
+            early_stop_file_threshold=self.budget_config.hunter_early_stop_file_threshold,
         )
         recon_findings = extract_recon_findings(recon)
         hunt = merge_recon_findings_into_hunt(hunt, recon_findings)
@@ -153,6 +156,7 @@ class AuditOrchestrator:
             repo_path=str(self.repo_path),
             hunt_result=limited_hunt,
             depth=self.input.depth,
+            max_concurrent_provers=self.budget_config.max_concurrent_provers,
         )
         self.prove_drop_summary = {"demoted_total": 0, "by_reason": {}, "findings": []}
         for finding in verified:
@@ -351,7 +355,12 @@ class AuditOrchestrator:
     def _phase_budget_limit(self, phase: str) -> float | None:
         if self.max_cost_usd is None:
             return None
-        return self.max_cost_usd * self._PHASE_BUDGETS[phase]
+        weights = {
+            "recon": self.budget_config.recon_budget_pct,
+            "hunt": self.budget_config.hunt_budget_pct,
+            "prove": self.budget_config.prove_budget_pct,
+        }
+        return self.max_cost_usd * weights[phase]
 
     def _check_cost_budget(self, phase: str) -> None:
         if self.max_cost_usd is not None and self.total_cost_usd >= self.max_cost_usd:
