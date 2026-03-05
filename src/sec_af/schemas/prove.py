@@ -82,6 +82,14 @@ class VerdictDecision(BaseModel):
     confidence: str = Field(description='One of: "high", "medium", "low"')
 
 
+class RemediationSuggestion(BaseModel):
+    """Flat schema for AI-generated remediation suggestion. 3 fields."""
+
+    fix_description: str = Field(description="Natural language description of the recommended fix")
+    patch_diff: str = Field(description="Unified diff format patch showing the code changes needed")
+    confidence: str = Field(description='Confidence in the fix: "high", "medium", or "low"')
+
+
 class DataFlowStep(BaseModel):
     """DESIGN.md §6.4 one step in source-to-sink proof trace."""
 
@@ -233,6 +241,7 @@ class VerifiedFinding(BaseModel):
     enables: list[str] | None = None
     compliance: list[ComplianceMapping] = Field(default_factory=list)
     reproduction_steps: list[ReproductionStep] = Field(default_factory=list)
+    remediation: RemediationSuggestion | None = None
     sarif_rule_id: str
     sarif_security_severity: float
     drop_reason: str | None = None

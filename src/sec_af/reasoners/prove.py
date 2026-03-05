@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Any
 
 from sec_af.agents.prove.dep_reachability import run_dep_reachability as _run_dep_reachability
@@ -9,7 +10,13 @@ from sec_af.agents.prove.tracer import run_tracer as _run_tracer
 from sec_af.agents.prove.verifier import run_verifier as _run_verifier
 from sec_af.agents.prove.verdict import run_verdict_agent as _run_verdict_agent
 from sec_af.schemas.hunt import RawFinding
-from sec_af.schemas.prove import DataFlowTrace, ExploitHypothesis, SanitizationResult
+from sec_af.schemas.prove import (
+    DataFlowTrace,
+    ExploitHypothesis,
+    RemediationSuggestion,
+    SanitizationResult,
+    VerifiedFinding,
+)
 
 from . import router
 
@@ -97,4 +104,28 @@ async def run_verdict_agent(
         sanitization=sanitization_model,
         exploit=exploit_model,
     )
+    return result.model_dump()
+
+
+@router.reasoner()
+async def run_remediation(repo_path: str, finding: dict[str, Any]) -> dict[str, Any]:
+    runtime_router = _runtime_router
+    runtime_router.note("Remediation agent starting", tags=["prove", "remediation"])
+    finding_model = VerifiedFinding(**finding)
+    remediation_module = import_module("sec_af.agents.remediation")
+    generate_remediation = getattr(remediation_module, "generate_remediation")
+    result = await generate_remediation(runtime_router, repo_path, finding_model)
+    return RemediationSuggestion.model_validate(result).model_dump()
+
+
+@router.reasoner()
+async def run_remediation_agent(
+    repo_path: str, finding: dict[str, Any], verdict: str, rationale: str
+) -> dict[str, Any]:
+    runtime_router = _runtime_router
+    runtime_router.note("Remediation agent starting", tags=["prove", "remediation"])
+    finding_model = RawFinding(**finding)
+    from sec_af.agents.remediation import run_remediation as _run_remediation  # pyright: ignore[reportMissingImports]
+
+    result = await _run_remediation(runtime_router, repo_path, finding_model, verdict, rationale)
     return result.model_dump()
