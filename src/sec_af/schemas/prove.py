@@ -185,3 +185,4 @@ class VerifiedFinding(BaseModel):
     reproduction_steps: list[ReproductionStep] = Field(default_factory=list)
     sarif_rule_id: str
     sarif_security_severity: float
+    drop_reason: str | None = None

@@ -194,6 +194,10 @@ async def audit(
             prove_dict = _as_dict(_unwrap(prove_raw, "prove_phase"), "prove_phase")
             verified = [VerifiedFinding.model_validate(v) for v in prove_dict["verified"]]
             orchestrator.findings_not_verified = prove_dict.get("not_verified", 0)
+            orchestrator.prove_drop_summary = prove_dict.get(
+                "drop_summary",
+                {"demoted_total": 0, "by_reason": {}, "findings": []},
+            )
             orchestrator._write_checkpoint("prove", verified)
 
             orchestrator.agent_invocations = prove_dict.get("total_selected", 0) + len(hunt.strategies_run) + 3

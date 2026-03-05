@@ -6,6 +6,7 @@ See DESIGN.md §7 and §12.3 for output payloads and progress reporting.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -97,6 +98,7 @@ class SecurityAuditResult(BaseModel):
     agent_invocations: int = 0
     cost_usd: float = 0.0
     cost_breakdown: dict[str, float] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     sarif: str
 
 
