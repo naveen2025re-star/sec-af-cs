@@ -19,7 +19,7 @@
 
 </div>
 
-Other tools flag patterns. SEC-AF **proves exploitability** — every finding comes with a verdict, a data flow trace, and evidence you can act on. One API call audits a repo end-to-end for ~$2–10.
+Other tools flag patterns. SEC-AF **proves exploitability** — every finding comes with a verdict, a data flow trace, and evidence you can act on. Free, open source, one API call.
 
 ## What You Get Back
 
@@ -125,19 +125,20 @@ flowchart TD
 
 > Claims sourced from official docs and pricing pages. If something is wrong, [open an issue](https://github.com/Agent-Field/sec-af/issues).
 
-| | SEC-AF | Semgrep | Snyk Code | CodeQL | Nullify |
+| | SEC-AF | Nullify | Snyk Code | Semgrep | CodeQL |
 |---|---|---|---|---|---|
-| **Approach** | **AI-native** · LLM reasons about code | **Rule-based** · pattern + taint matching | **AI-assisted** · DeepCode AI engine | **Rule-based** · semantic analysis + dataflow | **AI-native** · autonomous security workforce |
-| **Open source** | ✅ Apache 2.0 | Engine: LGPL-2.1 · Pro rules: proprietary | ❌ Proprietary | Queries: MIT · Engine: proprietary | ❌ Proprietary |
-| **Verified findings** | ✅ Adversarial PROVE phase · verdict + proof per finding | ❌ Pattern matches only | ❌ Priority Score (opaque) · no exploit proof | ❌ Static analysis alerts | ✅ Proof-of-exploit generation |
-| **Evidence per finding** | Data flow trace with taint propagation | — | Source-to-sink flow shown | Path queries show data flow | Exploit path + reproduction steps |
-| **Scoring** | ✅ Published composite formula | Internal | Opaque Priority Score | — | Internal |
-| **SARIF** | ✅ Native 2.1.0 | ✅ | ✅ | ✅ Native | Not documented |
-| **Compliance mapping** | PCI-DSS, SOC2, OWASP, HIPAA, ISO27001 | OWASP rules available | Platform compliance only | — | Not documented |
-| **Languages** | Any LLM-supported language | 35+ (parser-based) | 14+ | 10 | Not documented |
-| **Pricing** | **~$2–10/audit** (usage-based, OpenRouter) | OSS engine: free to use · Pro: $30/mo/contributor | $25–105/mo/developer | Free for public repos · $49/mo/committer (GHAS) | **$6,000/mo** |
+| **Approach** | **AI-native** | **AI-native** | **AI-assisted** | **Rule-based** | **Rule-based** |
+| | LLM reasons about code | Autonomous security workforce | DeepCode AI engine | Pattern + taint matching | Semantic analysis + dataflow |
+| **Open source** | ✅ Apache 2.0 | ❌ Proprietary | ❌ Proprietary | Engine: LGPL-2.1 · Pro rules: proprietary | Queries: MIT · Engine: proprietary |
+| **Verified findings** | ✅ Adversarial PROVE phase · verdict + proof per finding | ✅ Proof-of-exploit generation | ❌ Priority Score (opaque) · no exploit proof | ❌ Pattern matches only | ❌ Static analysis alerts |
+| **Evidence per finding** | Data flow trace with taint propagation | Exploit path + reproduction steps | Source-to-sink flow shown | — | Path queries show data flow |
+| **Scoring** | ✅ Published composite formula | Internal | Opaque Priority Score | Internal | — |
+| **SARIF** | ✅ Native 2.1.0 | Not documented | ✅ | ✅ | ✅ Native |
+| **Compliance mapping** | PCI-DSS, SOC2, OWASP, HIPAA, ISO27001 | Not documented | Platform compliance only | OWASP rules available | — |
+| **Languages** | Any LLM-supported language | Not documented | 14+ | 35+ (parser-based) | 10 |
+| **Pricing** | **Free · open source** | **$6,000/mo** | $25–105/mo/developer | OSS engine: free to use · Pro: $30/mo/contributor | Free for public repos · $49/mo/committer (GHAS) |
 
-**Where SEC-AF is strongest**: Verified findings with proof objects, transparent scoring, compliance mapping, open source — at pay-per-audit pricing.
+**Where SEC-AF is strongest**: Verified findings with proof objects, transparent scoring, compliance mapping, and fully open source.
 
 **Where others are stronger**: Semgrep and CodeQL have years of battle-tested rule coverage across 35+ languages. Snyk has deep IDE/SCA integration. Nullify adds runtime cloud context and auto-remediation campaigns. SEC-AF is newer and currently strongest on AI-driven code-level analysis.
 
