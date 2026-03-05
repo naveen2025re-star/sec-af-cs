@@ -53,3 +53,11 @@ class AuditInput(BaseModel):
         default=False,
         description="Enable DAST-like runtime exploit verification (requires sandbox)",
     )
+    monitoring_mode: bool = Field(
+        default=False,
+        description="Enable continuous monitoring (compare against baseline)",
+    )
+    baseline_path: str | None = Field(
+        default=None,
+        description="Path to baseline scan results for regression detection",
+    )
