@@ -187,7 +187,7 @@ def _default_strategies(recon: ReconResult, depth: str) -> list[HuntStrategy]:
 
     profile = _normalize_depth(depth)
     if profile in {DepthProfile.STANDARD, DepthProfile.THOROUGH}:
-        strategies.append(HuntStrategy.LOGIC_BUGS)
+        strategies.append(HuntStrategy.BUSINESS_LOGIC)
 
     ordered: list[HuntStrategy] = []
     for s in strategies:
