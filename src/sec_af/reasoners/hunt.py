@@ -12,6 +12,7 @@ from sec_af.agents.hunt.dos import run_dos_hunter as _run_dos_hunter
 from sec_af.agents.hunt.injection import run_injection_hunter as _run_injection_hunter
 from sec_af.agents.hunt.logic import run_logic_hunter as _run_logic_hunter
 from sec_af.agents.hunt.ssrf import run_ssrf_hunter as _run_ssrf_hunter
+from sec_af.agents.hunt.business_logic import run_business_logic_hunter as _run_business_logic_hunter
 from sec_af.agents.hunt.supply_chain import run_supply_chain_hunter as _run_supply_chain_hunter
 from sec_af.agents.hunt.xss import run_xss_hunter as _run_xss_hunter
 from sec_af.schemas.hunt import RawFinding
@@ -164,15 +165,30 @@ async def run_crypto_hunter(
 
 
 @router.reasoner()
+async def run_business_logic_hunter(
+    repo_path: str,
+    recon_context: dict[str, Any],
+    depth: str,
+    max_files_without_signal: int = 30,
+) -> dict[str, Any]:
+    _runtime_router.note("Business logic hunter starting", tags=["hunt", "business-logic"])
+    return await _run_hunter(
+        _run_business_logic_hunter,
+        repo_path=repo_path,
+        recon_context=recon_context,
+        depth=depth,
+        max_files_without_signal=max_files_without_signal,
+    )
+
+
+@router.reasoner()
 async def run_logic_bugs_hunter(
     repo_path: str,
     recon_context: dict[str, Any],
     depth: str,
     max_files_without_signal: int = 30,
 ) -> dict[str, Any]:
-    _runtime_router.note("Logic bugs hunter starting", tags=["hunt", "logic-bugs"])
-    return await _run_hunter(
-        _run_logic_hunter,
+    return await run_business_logic_hunter(
         repo_path=repo_path,
         recon_context=recon_context,
         depth=depth,

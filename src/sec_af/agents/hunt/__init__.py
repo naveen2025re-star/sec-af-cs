@@ -50,7 +50,9 @@ _STRATEGY_RUNNERS: dict[HuntStrategy, HunterRunner] = {
     HuntStrategy.SSRF: _load_hunter(".ssrf", "run_ssrf_hunter", HuntStrategy.SSRF),
     HuntStrategy.AUTH: _load_hunter(".auth", "run_auth_hunter", HuntStrategy.AUTH),
     HuntStrategy.CRYPTO: _load_hunter(".crypto", "run_crypto_hunter", HuntStrategy.CRYPTO),
-    HuntStrategy.LOGIC_BUGS: _load_hunter(".logic", "run_logic_hunter", HuntStrategy.LOGIC_BUGS),
+    HuntStrategy.BUSINESS_LOGIC: _load_hunter(
+        ".business_logic", "run_business_logic_hunter", HuntStrategy.BUSINESS_LOGIC
+    ),
     HuntStrategy.DATA_EXPOSURE: _load_hunter(".data_exposure", "run_data_exposure_hunter", HuntStrategy.DATA_EXPOSURE),
     HuntStrategy.SUPPLY_CHAIN: _load_hunter(".supply_chain", "run_supply_chain_hunter", HuntStrategy.SUPPLY_CHAIN),
     HuntStrategy.CONFIG_SECRETS: _load_hunter(

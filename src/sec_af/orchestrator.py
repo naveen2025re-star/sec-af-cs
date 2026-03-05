@@ -303,7 +303,7 @@ class AuditOrchestrator:
 
         depth = self._depth_profile()
         if depth in {DepthProfile.STANDARD, DepthProfile.THOROUGH}:
-            strategies.append(HuntStrategy.LOGIC_BUGS)
+            strategies.append(HuntStrategy.BUSINESS_LOGIC)
         if depth == DepthProfile.THOROUGH and "python" in {lang.lower() for lang in recon.languages}:
             strategies.append(HuntStrategy.PYTHON_SPECIFIC)
         if depth == DepthProfile.THOROUGH and any(

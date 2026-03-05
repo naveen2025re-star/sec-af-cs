@@ -1,52 +1,20 @@
 from __future__ import annotations
 
-import shutil
-import tempfile
-from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from sec_af.agents._utils import extract_harness_result
 from sec_af.config import DepthProfile
-from sec_af.context import recon_context_for_logic
-from sec_af.schemas.hunt import HuntResult, HuntStrategy
+from sec_af.schemas.hunt import HuntResult
+
+from .business_logic import is_business_logic_hunter_enabled, run_business_logic_hunter
 
 if TYPE_CHECKING:
+    from .business_logic import HarnessCapable
     from sec_af.schemas.recon import ReconResult
 
 
-class HarnessCapable(Protocol):
-    async def harness(
-        self, prompt: str, *, schema: object = None, cwd: str | None = None, **kwargs: object
-    ) -> object: ...
-
-
-PROMPT_PATH = Path(__file__).resolve().parents[4] / "prompts" / "hunt" / "logic.txt"
-
-
-def _normalize_depth(depth: str | DepthProfile) -> DepthProfile:
-    if isinstance(depth, DepthProfile):
-        return depth
-    try:
-        return DepthProfile(depth.lower())
-    except ValueError:
-        return DepthProfile.STANDARD
-
-
 def is_logic_hunter_enabled(depth: str | DepthProfile) -> bool:
-    profile = _normalize_depth(depth)
-    return profile in {DepthProfile.STANDARD, DepthProfile.THOROUGH}
-
-
-def _build_prompt(prompt_template: str, recon: ReconResult, repo_path: str) -> str:
-    return (
-        prompt_template.replace("{{RECON_CONTEXT}}", recon_context_for_logic(recon))
-        + "\n\nCONTEXT:\n"
-        + f"- Repository path: {repo_path}\n"
-        + "- Strategy: logic_bugs\n"
-        + "- Focus CWEs: CWE-840 (Business Logic Errors), CWE-841 (Behavioral Workflow)\n"
-        + "- Take multiple turns: inspect workflows, validate state transitions, and build findings incrementally.\n"
-        + "- Write final JSON only when complete."
-    )
+    return is_business_logic_hunter_enabled(depth)
 
 
 async def run_logic_hunter(
@@ -55,25 +23,13 @@ async def run_logic_hunter(
     recon: ReconResult,
     depth: str | DepthProfile,
     max_files_without_signal: int = 30,
+    depth_prompt: str = "",
 ) -> HuntResult:
-    if not is_logic_hunter_enabled(depth):
-        return HuntResult(findings=[], strategies_run=[])
-
-    prompt_template = PROMPT_PATH.read_text(encoding="utf-8")
-    prompt = (
-        _build_prompt(prompt_template, recon, repo_path)
-        + "\n\nEXECUTION CONSTRAINTS:\n"
-        + "- Early stop rule: if you inspect "
-        + f"{max_files_without_signal} files without credible logic flaws, "
-        + "stop and return empty findings.\n"
+    return await run_business_logic_hunter(
+        app=app,
+        repo_path=repo_path,
+        recon_result=recon,
+        depth=depth,
+        max_files_without_signal=max_files_without_signal,
+        depth_prompt=depth_prompt,
     )
-    agent_name = "hunt-logic"
-    harness_cwd = tempfile.mkdtemp(prefix=f"secaf-{agent_name}-")
-    try:
-        result = await app.harness(prompt=prompt, schema=HuntResult, cwd=harness_cwd, project_dir=repo_path)
-        parsed = extract_harness_result(result, HuntResult, "Business logic hunter")
-        if not parsed.strategies_run:
-            parsed.strategies_run = [HuntStrategy.LOGIC_BUGS.value]
-        return parsed
-    finally:
-        shutil.rmtree(harness_cwd, ignore_errors=True)
