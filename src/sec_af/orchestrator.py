@@ -63,6 +63,7 @@ class AuditOrchestrator:
         self.agent_invocations = 0
         self.budget_exhausted = False
         self.findings_not_verified = 0
+        self.prove_drop_summary: dict[str, Any] = {"demoted_total": 0, "by_reason": {}, "findings": []}
 
     async def run(self) -> SecurityAuditResult:
         self.app.note("Starting SEC-AF orchestrator", tags=["audit", "start"])
@@ -149,6 +150,14 @@ class AuditOrchestrator:
             hunt_result=limited_hunt,
             depth=self.input.depth,
         )
+        self.prove_drop_summary = {"demoted_total": 0, "by_reason": {}, "findings": []}
+        for finding in verified:
+            if finding.drop_reason:
+                self._track_drop(
+                    finding_title=finding.title,
+                    original_verdict=None,
+                    reason=finding.drop_reason,
+                )
         self._emit_progress(phase="prove", agents_total=1, agents_completed=1, findings_so_far=len(verified))
         return verified
 
@@ -224,6 +233,10 @@ class AuditOrchestrator:
             agent_invocations=self.agent_invocations,
             cost_usd=round(self.total_cost_usd, 4),
             cost_breakdown={phase: round(cost, 4) for phase, cost in self.cost_breakdown.items()},
+            metadata={
+                "findings_not_verified": self.findings_not_verified,
+                "prove_drop_summary": self.prove_drop_summary,
+            },
             sarif="",
         )
 
@@ -376,6 +389,23 @@ class AuditOrchestrator:
             cost_so_far_usd=round(self.total_cost_usd, 4),
         )
         self.app.note(progress.model_dump_json(), tags=["audit", "progress", phase])
+
+    def _track_drop(self, *, finding_title: str, original_verdict: str | None, reason: str) -> None:
+        self.prove_drop_summary["demoted_total"] = int(self.prove_drop_summary.get("demoted_total", 0)) + 1
+        by_reason = cast("dict[str, int]", self.prove_drop_summary.setdefault("by_reason", {}))
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+        findings = cast("list[dict[str, str | None]]", self.prove_drop_summary.setdefault("findings", []))
+        findings.append(
+            {
+                "title": finding_title,
+                "original_verdict": original_verdict,
+                "reason": reason,
+            }
+        )
+        self.app.note(
+            f"Demoted finding '{finding_title}' (verdict={original_verdict or 'unknown'}): {reason}",
+            tags=["audit", "prove", "drop"],
+        )
 
 
 def _verified_finding_fallback(finding: RawFinding) -> VerifiedFinding:

@@ -208,6 +208,30 @@ def _prover_cap(depth: str, max_provers: int | None) -> int:
     return max(0, min(max_provers, cap)) if max_provers is not None else cap
 
 
+def _track_drop(
+    *,
+    summary: dict[str, Any],
+    finding_title: str,
+    original_verdict: str | None,
+    reason: str,
+) -> None:
+    summary["demoted_total"] = int(summary.get("demoted_total", 0)) + 1
+    by_reason = cast("dict[str, int]", summary.setdefault("by_reason", {}))
+    by_reason[reason] = by_reason.get(reason, 0) + 1
+    findings = cast("list[dict[str, str | None]]", summary.setdefault("findings", []))
+    findings.append(
+        {
+            "title": finding_title,
+            "original_verdict": original_verdict,
+            "reason": reason,
+        }
+    )
+    _runtime_router.note(
+        f"Demoted finding '{finding_title}' (verdict={original_verdict or 'unknown'}): {reason}",
+        tags=["prove", "drop", "demotion"],
+    )
+
+
 @router.reasoner()
 async def prove_phase(
     repo_path: str,
@@ -229,11 +253,72 @@ async def prove_phase(
     prove_results = await asyncio.gather(*verify_calls, return_exceptions=True)
 
     verified: list[VerifiedFinding] = []
+    drop_summary: dict[str, Any] = {"demoted_total": 0, "by_reason": {}, "findings": []}
     for idx, raw in enumerate(prove_results):
+        finding = selected[idx]
         if isinstance(raw, Exception):
-            verified.append(verifier_fallback(selected[idx], str(raw)))
+            _track_drop(
+                summary=drop_summary,
+                finding_title=finding.title,
+                original_verdict=None,
+                reason="verifier_error",
+            )
+            verified.append(verifier_fallback(finding, str(raw), drop_reason="verifier_error"))
             continue
-        verified.append(VerifiedFinding.model_validate(_as_dict(_unwrap(raw, "run_verifier"), "run_verifier")))
+        try:
+            payload = _as_dict(_unwrap(raw, "run_verifier"), "run_verifier")
+        except Exception as exc:
+            _track_drop(
+                summary=drop_summary,
+                finding_title=finding.title,
+                original_verdict=None,
+                reason="schema_parse_failure",
+            )
+            verified.append(
+                verifier_fallback(
+                    finding,
+                    f"Schema parse failed: {exc}",
+                    drop_reason="schema_parse_failure",
+                )
+            )
+            continue
+
+        verdict_value = payload.get("verdict")
+        if isinstance(verdict_value, str) and verdict_value.lower() == "unverified":
+            _track_drop(
+                summary=drop_summary,
+                finding_title=finding.title,
+                original_verdict=verdict_value,
+                reason="verdict_unverified",
+            )
+            verified.append(
+                verifier_fallback(
+                    finding,
+                    "Verifier returned unverified verdict; demoted for manual review",
+                    drop_reason="verdict_unverified",
+                    original_verdict=verdict_value,
+                )
+            )
+            continue
+
+        try:
+            verified.append(VerifiedFinding.model_validate(payload))
+        except Exception as exc:
+            original_verdict = str(verdict_value) if verdict_value is not None else None
+            _track_drop(
+                summary=drop_summary,
+                finding_title=finding.title,
+                original_verdict=original_verdict,
+                reason="schema_parse_failure",
+            )
+            verified.append(
+                verifier_fallback(
+                    finding,
+                    f"Schema parse failed: {exc}",
+                    drop_reason="schema_parse_failure",
+                    original_verdict=original_verdict,
+                )
+            )
 
     _runtime_router.note(f"PROVE phase complete: {len(verified)} verified", tags=["phase", "prove", "done"])
     return {
@@ -241,4 +326,5 @@ async def prove_phase(
         "total_selected": len(selected),
         "total_findings": len(hunt.findings),
         "not_verified": max(0, len(hunt.findings) - len(selected)),
+        "drop_summary": drop_summary,
     }

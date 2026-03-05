@@ -92,7 +92,20 @@ async def _run_verifier_batch(
     verified: list[VerifiedFinding] = []
     for index, result in enumerate(results):
         if isinstance(result, BaseException):
-            verified.append(verifier_fallback(batch[index], str(result)))
+            message = str(result)
+            lowered = message.lower()
+            if "unverified" in lowered and "verdict" in lowered:
+                verified.append(
+                    verifier_fallback(
+                        batch[index],
+                        "Verifier returned unverified verdict; demoted for manual review",
+                        drop_reason="verdict_unverified",
+                        original_verdict="unverified",
+                    )
+                )
+                continue
+            drop_reason = "schema_parse_failure" if "validationerror" in lowered else "verifier_error"
+            verified.append(verifier_fallback(batch[index], message, drop_reason=drop_reason))
             continue
         verified.append(result)
     return verified

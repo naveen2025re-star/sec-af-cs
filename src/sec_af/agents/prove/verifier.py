@@ -81,7 +81,17 @@ def _build_prompt(template: str, finding: RawFinding, depth: str) -> str:
     return prompt
 
 
-def fallback(finding: RawFinding, reason: str) -> VerifiedFinding:
+def fallback(
+    finding: RawFinding,
+    reason: str,
+    *,
+    drop_reason: str | None = None,
+    original_verdict: str | None = None,
+) -> VerifiedFinding:
+    rationale = f"Verification incomplete: {reason}"
+    if original_verdict:
+        rationale = f"{rationale} (original verdict: {original_verdict})"
+    tags = ["low_confidence"] if drop_reason else []
     return VerifiedFinding(
         id=finding.id,
         fingerprint=finding.fingerprint,
@@ -93,8 +103,9 @@ def fallback(finding: RawFinding, reason: str) -> VerifiedFinding:
         owasp_category=finding.owasp_category,
         verdict=Verdict.INCONCLUSIVE,
         evidence_level=EvidenceLevel.STATIC_MATCH,
-        rationale=f"Verification incomplete: {reason}",
+        rationale=rationale,
         severity=finding.estimated_severity,
+        tags=tags,
         exploitability_score=0.0,
         location=Location(
             file_path=finding.file_path,
@@ -106,6 +117,7 @@ def fallback(finding: RawFinding, reason: str) -> VerifiedFinding:
         reproduction_steps=[],
         sarif_rule_id=_sarif_rule_id(finding),
         sarif_security_severity=0.0,
+        drop_reason=drop_reason,
     )
 
 
