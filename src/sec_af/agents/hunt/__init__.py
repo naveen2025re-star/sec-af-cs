@@ -113,6 +113,7 @@ async def _run_single_hunter(
     recon_result: ReconResult,
     depth: DepthProfile,
     early_stop_file_threshold: int,
+    include_paths: list[str] | None = None,
 ) -> list[RawFinding]:
     depth_prompt = (
         "Use deep, multi-turn analysis. Trace cross-file flows and hunt secondary pivots."
@@ -128,6 +129,7 @@ async def _run_single_hunter(
             depth=depth.value,
             depth_prompt=depth_prompt,
             max_files_without_signal=early_stop_file_threshold,
+            include_paths=include_paths,
         )
     except TypeError:
         try:
@@ -161,6 +163,7 @@ async def run_hunt(
     depth: str,
     max_concurrent_hunters: int = 4,
     early_stop_file_threshold: int = 30,
+    include_paths: list[str] | None = None,
 ) -> HuntResult:
     started = time.monotonic()
     profile = _normalize_depth(depth)
@@ -178,6 +181,7 @@ async def run_hunt(
                 recon_result=recon_result,
                 depth=profile,
                 early_stop_file_threshold=early_stop_file_threshold,
+                include_paths=include_paths,
             )
 
     hunter_tasks = [_run_strategy(strategy) for strategy in strategies]
@@ -191,6 +195,10 @@ async def run_hunt(
             all_findings.extend(result)
 
     deduplicated = await deduplicate_and_correlate(all_findings, recon_result, app, repo_path)
+    if include_paths:
+        normalized = {path.strip() for path in include_paths if path and path.strip()}
+        deduplicated.findings = [finding for finding in deduplicated.findings if finding.file_path in normalized]
+
     deduplicated.total_raw = len(all_findings)
     deduplicated.deduplicated_count = len(deduplicated.findings)
     deduplicated.chain_count = len(deduplicated.chains)

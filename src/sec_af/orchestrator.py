@@ -15,6 +15,7 @@ from .agents.prove import run_prove
 from .agents.recon import extract_recon_findings, run_recon
 from .compliance.mapping import get_compliance_gaps, get_compliance_mappings, get_compliance_mappings_hybrid
 from .config import AuditConfig, DepthProfile
+from .diff_analysis import DiffAnalysis, analyze_diff
 from .harness import AIGateWrapper
 from .output.json_output import generate_json
 from .output.report import generate_report
@@ -56,6 +57,14 @@ class AuditOrchestrator:
         self.started_at = time.monotonic()
         self.repo_path = Path(os.getenv("SEC_AF_REPO_PATH", os.getcwd())).resolve()
         self.checkpoint_dir = self.repo_path / ".sec-af"
+        self.is_pr_mode = input.is_pr
+        self.diff_analysis: DiffAnalysis | None = None
+        if self.is_pr_mode and input.base_commit_sha:
+            self.diff_analysis = analyze_diff(
+                str(self.repo_path),
+                input.base_commit_sha,
+                input.commit_sha or "HEAD",
+            )
         self.config = AuditConfig.from_input(self.input, str(self.repo_path))
         self.budget_config = self.config.budget
         self.max_cost_usd = input.max_cost_usd
@@ -113,6 +122,12 @@ class AuditOrchestrator:
 
     async def _run_recon(self) -> ReconResult:
         self.app.note("Phase: RECON", tags=["audit", "recon"])
+        if self.is_pr_mode:
+            cached = self._try_load_cached_recon()
+            if cached is not None:
+                self.app.note("Using cached recon for PR-mode scan", tags=["audit", "recon", "cached"])
+                self._emit_progress(phase="recon", agents_total=1, agents_completed=1, findings_so_far=0)
+                return cached
         recon = await run_recon(
             app=_PhaseHarnessProxy(self, "recon"),
             repo_path=str(self.repo_path),
@@ -123,6 +138,17 @@ class AuditOrchestrator:
 
     async def _run_hunt(self, recon: ReconResult) -> HuntResult:
         self.app.note("Phase: HUNT", tags=["audit", "hunt"])
+        include_paths = self.config.include_paths
+        if self.is_pr_mode and self.diff_analysis and self.diff_analysis.changed_files:
+            include_paths = self.diff_analysis.all_relevant_files
+            self.app.note(
+                (
+                    f"PR-mode: scanning {self.diff_analysis.file_count} files "
+                    f"({len(self.diff_analysis.changed_files)} changed + "
+                    f"{len(self.diff_analysis.blast_radius_files)} blast radius)"
+                ),
+                tags=["audit", "hunt", "pr-mode"],
+            )
         hunt = await run_hunt(
             app=_PhaseHarnessProxy(self, "hunt"),
             repo_path=str(self.repo_path),
@@ -130,6 +156,7 @@ class AuditOrchestrator:
             depth=self.input.depth,
             max_concurrent_hunters=self.budget_config.max_concurrent_hunters,
             early_stop_file_threshold=self.budget_config.hunter_early_stop_file_threshold,
+            include_paths=include_paths,
         )
         recon_findings = extract_recon_findings(recon)
         hunt = merge_recon_findings_into_hunt(hunt, recon_findings)
@@ -195,6 +222,15 @@ class AuditOrchestrator:
         verified: list[VerifiedFinding],
     ) -> SecurityAuditResult:
         _ = recon
+        severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+        threshold_value = severity_order.get(self.input.severity_threshold.lower(), 0)
+        if threshold_value > 0:
+            verified = [
+                finding
+                for finding in verified
+                if severity_order.get(finding.severity.value.lower(), 0) >= threshold_value
+            ]
+
         for finding in verified:
             finding.exploitability_score = compute_exploitability_score(finding)
             finding.sarif_security_severity = finding.exploitability_score
@@ -293,6 +329,14 @@ class AuditOrchestrator:
         payload = json.loads(path.read_text(encoding="utf-8"))
         rows = payload.get("data", [])
         return [schema(**row) for row in rows]
+
+    def _try_load_cached_recon(self) -> ReconResult | None:
+        """Try to load cached recon from previous full scan."""
+
+        try:
+            return self._read_checkpoint("recon", ReconResult)
+        except (FileNotFoundError, Exception):
+            return None
 
     def _checkpoint_path(self, phase: str) -> Path:
         return self.checkpoint_dir / f"checkpoint-{phase}.json"
