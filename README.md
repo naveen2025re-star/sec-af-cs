@@ -19,7 +19,7 @@
 
 </div>
 
-Other tools flag patterns. SEC-AF **proves exploitability** — every finding comes with a verdict, a data flow trace, and evidence you can act on. Free, open source, one API call.
+Other tools flag patterns. SEC-AF **proves exploitability**: every finding ships with a verdict, a data flow trace, and evidence you can act on. Free, open source, one API call.
 
 <p align="center">
   <img src="assets/hero-b-swarm.png" alt="SEC-AF — AI-native security auditor" width="100%" />
@@ -59,13 +59,13 @@ This is a real finding from SEC-AF auditing [DVGA](https://github.com/dolevf/Dam
 }
 ```
 
-Every finding includes a **verdict** (`confirmed` / `likely` / `inconclusive` / `not_exploitable`), a **proof object** with the full taint trace, and the **exact code location**. Not "this might be a problem" — SEC-AF traces the data from source to sink and proves whether it's exploitable.
+Every finding includes a **verdict** (`confirmed` / `likely` / `inconclusive` / `not_exploitable`), a **proof object** with the full taint trace, and the exact code location. Not "this might be a problem." SEC-AF traces data from source to sink and proves whether it's actually exploitable.
 
 > Full benchmark output (30 findings): [`exampl/dvga-benchmark-result.json`](exampl/dvga-benchmark-result.json)
 
 ## Benchmark: DVGA
 
-We run SEC-AF against [Damn Vulnerable GraphQL Application](https://github.com/dolevf/Damn-Vulnerable-GraphQL-Application) — a purpose-built vulnerable app with 21 documented security scenarios.
+We run SEC-AF against [Damn Vulnerable GraphQL Application](https://github.com/dolevf/Damn-Vulnerable-GraphQL-Application), a deliberately vulnerable app with 21 documented security scenarios.
 
 | Metric | Value |
 |---|---|
@@ -96,13 +96,13 @@ We run SEC-AF against [Damn Vulnerable GraphQL Application](https://github.com/d
 <details>
 <summary><strong>What it missed (and why)</strong></summary>
 
-The 9 missed scenarios are primarily **GraphQL protocol-level attacks**: batch queries, deep recursion, alias abuse, field duplication, introspection exposure. These require runtime/DAST analysis. SEC-AF is currently SAST-focused — protocol-level detection is on the roadmap.
+The 9 missed scenarios are primarily **GraphQL protocol-level attacks**: batch queries, deep recursion, alias abuse, field duplication, introspection exposure. These require runtime/DAST analysis. SEC-AF is currently SAST-focused. Protocol-level detection is on the roadmap.
 
 </details>
 
 ## How It Works
 
-SEC-AF runs a **Signal Cascade** pipeline — each phase narrows the signal:
+SEC-AF runs a **Signal Cascade** pipeline. Each phase narrows the signal:
 
 <p align="center">
   <img src="assets/architecture.png" alt="SEC-AF Signal Cascade Pipeline — RECON → HUNT → DEDUP → PROVE → OUTPUT" width="100%" />
@@ -110,9 +110,9 @@ SEC-AF runs a **Signal Cascade** pipeline — each phase narrows the signal:
 
 **Key design decisions:**
 
-- **`.ai()` vs `.harness()` split** — fast gates (strategy selection, yes/no) use `.ai()`. Deep analysis (recon, hunt, prove) uses `.harness()` with multi-turn sessions. No monolithic prompts.
-- **Scan + enrich decomposition** — hunters don't produce findings in one shot. A scanner identifies locations, then an enricher analyzes each one individually. Higher evidence quality per finding.
-- **Adversarial verification** — the PROVE phase doesn't confirm findings, it tries to **disprove** them. What survives gets a verdict and evidence level.
+- **`.ai()` vs `.harness()` split**: fast gates (strategy selection, yes/no) use `.ai()`. Deep analysis (recon, hunt, prove) uses `.harness()` with multi-turn sessions. No monolithic prompts.
+- **Scan + enrich decomposition**: hunters don't produce findings in one shot. A scanner identifies locations, then an enricher analyzes each one individually. Higher evidence quality per finding.
+- **Adversarial verification**: the PROVE phase doesn't confirm findings, it tries to **disprove** them. What survives gets a verdict and evidence level.
 
 ## Comparison
 
@@ -124,10 +124,10 @@ SEC-AF runs a **Signal Cascade** pipeline — each phase narrows the signal:
 | | LLM reasons about code | Autonomous security workforce | DeepCode AI engine | Pattern + taint matching | Semantic analysis + dataflow |
 | **Open source** | ✅ Apache 2.0 | ❌ Proprietary | ❌ Proprietary | Engine: LGPL-2.1 · Pro rules: proprietary | Queries: MIT · Engine: proprietary |
 | **Verified findings** | ✅ Adversarial PROVE phase · verdict + proof per finding | ✅ Proof-of-exploit generation | ❌ Priority Score (opaque) · no exploit proof | ❌ Pattern matches only | ❌ Static analysis alerts |
-| **Evidence per finding** | Data flow trace with taint propagation | Exploit path + reproduction steps | Source-to-sink flow shown | — | Path queries show data flow |
-| **Scoring** | ✅ Published composite formula | Internal | Opaque Priority Score | Internal | — |
+| **Evidence per finding** | Data flow trace with taint propagation | Exploit path + reproduction steps | Source-to-sink flow shown | - | Path queries show data flow |
+| **Scoring** | ✅ Published composite formula | Internal | Opaque Priority Score | Internal | - |
 | **SARIF** | ✅ Native 2.1.0 | Not documented | ✅ | ✅ | ✅ Native |
-| **Compliance mapping** | PCI-DSS, SOC2, OWASP, HIPAA, ISO27001 | Not documented | Platform compliance only | OWASP rules available | — |
+| **Compliance mapping** | PCI-DSS, SOC2, OWASP, HIPAA, ISO27001 | Not documented | Platform compliance only | OWASP rules available | - |
 | **Languages** | Any LLM-supported language | Not documented | 14+ | 35+ (parser-based) | 10 |
 | **Pricing** | **Free · open source** | **$6,000/mo** | $25–105/mo/developer | OSS engine: free to use · Pro: $30/mo/contributor | Free for public repos · $49/mo/committer (GHAS) |
 
@@ -284,7 +284,7 @@ jobs:
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `AGENTFIELD_SERVER` | Yes | `http://localhost:8080` | Control plane URL |
-| `OPENROUTER_API_KEY` | Yes | — | LLM provider credential |
+| `OPENROUTER_API_KEY` | Yes | - | LLM provider credential |
 | `HARNESS_MODEL` | No | `minimax/minimax-m2.5` | Model for deep `.harness()` analysis |
 | `AI_MODEL` | No | `minimax/minimax-m2.5` | Model for fast `.ai()` gates |
 | `SEC_AF_MAX_TURNS` | No | `50` | Max harness turns per call |
@@ -309,7 +309,7 @@ Architecture: [`docs/DESIGN.md`](docs/DESIGN.md)
 
 <div align="center">
 
-SEC-AF is built on [AgentField](https://github.com/Agent-Field/agentfield) — open infrastructure for production-grade autonomous agents.
+SEC-AF is built on [AgentField](https://github.com/Agent-Field/agentfield), open infrastructure for production-grade autonomous agents.
 
 **[Apache-2.0](LICENSE)**
 
