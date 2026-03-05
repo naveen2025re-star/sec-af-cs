@@ -12,9 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml README.md ./
 COPY src/ src/
+COPY agentfield-sdk/ /tmp/agentfield-sdk/
 
 RUN pip install --no-cache-dir --prefix=/install \
-    "agentfield @ git+https://github.com/Agent-Field/agentfield.git@feat/harness-opencode-combined#subdirectory=sdk/python" \
+    /tmp/agentfield-sdk/ \
     "pydantic>=2.0" \
     "httpx>=0.27" \
     "python-dotenv>=1.0" && \

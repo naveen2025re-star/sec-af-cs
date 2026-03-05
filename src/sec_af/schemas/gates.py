@@ -29,6 +29,13 @@ class StrategySelection(BaseModel):
     rationale: str
 
 
+class CWEExpansion(BaseModel):
+    """AI-suggested CWE additions based on recon context."""
+
+    additional_cwes: list[str] = Field(description="CWE IDs to add beyond baseline, e.g. ['CWE-918', 'CWE-611'].")
+    rationale: str
+
+
 class RelevanceGate(BaseModel):
     """DESIGN.md §2.4: relevance/noise filter gate for candidate findings."""
 
@@ -43,3 +50,24 @@ class VerdictGate(BaseModel):
     confirmed: bool
     confidence: float
     reason: str
+
+
+class ComplianceSuggestion(BaseModel):
+    framework: str
+    control_id: str
+    control_name: str
+
+
+class ComplianceGate(BaseModel):
+    mappings: list[ComplianceSuggestion]
+    confidence: str
+
+
+class ReachabilityGate(BaseModel):
+    """Reachability assessment for findings without explicit reachability tags."""
+
+    reachability: str = Field(
+        description='One of: "externally_reachable", "requires_auth", "internal_only", "unreachable".'
+    )
+    rationale: str
+    confidence: str = Field(description='One of: "high", "medium", "low".')

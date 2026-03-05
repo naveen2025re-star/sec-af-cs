@@ -44,10 +44,28 @@ class AuditInput(BaseModel):
     )
     is_pr: bool = Field(default=False, description="Whether scan is for a pull request")
     pr_id: str | None = Field(default=None, description="Pull request identifier")
-    post_pr_comments: bool = Field(
-        default=False, description="Post findings as PR comments"
-    )
+    post_pr_comments: bool = Field(default=False, description="Post findings as PR comments")
     fail_on_findings: bool = Field(
         default=False,
         description="Return non-zero status for CI gating",
+    )
+    dast_enabled: bool = Field(
+        default=False,
+        description="Enable DAST-like runtime exploit verification (requires sandbox)",
+    )
+    repo_urls: list[str] = Field(
+        default_factory=list,
+        description="Additional repository URLs for cross-service analysis",
+    )
+    monitoring_mode: bool = Field(
+        default=False,
+        description="Enable continuous monitoring (compare against baseline)",
+    )
+    baseline_path: str | None = Field(
+        default=None,
+        description="Path to baseline scan results for regression detection",
+    )
+    custom_policies: list[str] = Field(
+        default_factory=list,
+        description="Org-specific security policy rules to evaluate (e.g., 'All endpoints must require authentication')",
     )

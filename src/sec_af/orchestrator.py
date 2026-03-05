@@ -4,6 +4,7 @@ import json
 import os
 import time
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
@@ -12,9 +13,11 @@ from pydantic import BaseModel
 
 from .agents.hunt import run_hunt
 from .agents.prove import run_prove
-from .agents.recon import run_recon
-from .compliance.mapping import get_compliance_gaps, get_compliance_mappings
-from .config import DepthProfile
+from .agents.recon import extract_recon_findings, run_recon
+from .compliance.mapping import get_compliance_gaps, get_compliance_mappings, get_compliance_mappings_hybrid
+from .config import AuditConfig, DepthProfile
+from .diff_analysis import DiffAnalysis, analyze_diff
+from .harness import AIGateWrapper
 from .output.json_output import generate_json
 from .output.report import generate_report
 from .output.sarif import generate_sarif
@@ -47,7 +50,6 @@ class _PhaseHarnessProxy:
 
 
 class AuditOrchestrator:
-    _PHASE_BUDGETS: dict[str, float] = {"recon": 0.15, "hunt": 0.35, "prove": 0.50}
     _PHASE_ORDER: tuple[str, ...] = ("recon", "hunt", "prove")
 
     def __init__(self, app: Agent, input: AuditInput):
@@ -56,6 +58,16 @@ class AuditOrchestrator:
         self.started_at = time.monotonic()
         self.repo_path = Path(os.getenv("SEC_AF_REPO_PATH", os.getcwd())).resolve()
         self.checkpoint_dir = self.repo_path / ".sec-af"
+        self.is_pr_mode = input.is_pr
+        self.diff_analysis: DiffAnalysis | None = None
+        if self.is_pr_mode and input.base_commit_sha:
+            self.diff_analysis = analyze_diff(
+                str(self.repo_path),
+                input.base_commit_sha,
+                input.commit_sha or "HEAD",
+            )
+        self.config = AuditConfig.from_input(self.input, str(self.repo_path))
+        self.budget_config = self.config.budget
         self.max_cost_usd = input.max_cost_usd
         self.max_duration_seconds = input.max_duration_seconds
         self.total_cost_usd = 0.0
@@ -63,6 +75,8 @@ class AuditOrchestrator:
         self.agent_invocations = 0
         self.budget_exhausted = False
         self.findings_not_verified = 0
+        self.prove_drop_summary: dict[str, Any] = {"demoted_total": 0, "by_reason": {}, "findings": []}
+        self.ai_gate = AIGateWrapper(app=self.app)
 
     async def run(self) -> SecurityAuditResult:
         self.app.note("Starting SEC-AF orchestrator", tags=["audit", "start"])
@@ -75,7 +89,7 @@ class AuditOrchestrator:
         verified = await self._run_prove(recon, hunt)
         self._write_checkpoint("prove", verified)
 
-        result = self._generate_output(recon=recon, hunt=hunt, verified=verified)
+        result = await self._generate_output(recon=recon, hunt=hunt, verified=verified)
         self.app.note("SEC-AF audit complete", tags=["audit", "complete"])
         return result
 
@@ -105,10 +119,16 @@ class AuditOrchestrator:
             hunt = self._read_checkpoint("hunt", HuntResult)
             verified = self._read_checkpoint_list("prove", VerifiedFinding)
 
-        return self._generate_output(recon=recon, hunt=hunt, verified=verified)
+        return await self._generate_output(recon=recon, hunt=hunt, verified=verified)
 
     async def _run_recon(self) -> ReconResult:
         self.app.note("Phase: RECON", tags=["audit", "recon"])
+        if self.is_pr_mode:
+            cached = self._try_load_cached_recon()
+            if cached is not None:
+                self.app.note("Using cached recon for PR-mode scan", tags=["audit", "recon", "cached"])
+                self._emit_progress(phase="recon", agents_total=1, agents_completed=1, findings_so_far=0)
+                return cached
         recon = await run_recon(
             app=_PhaseHarnessProxy(self, "recon"),
             repo_path=str(self.repo_path),
@@ -119,12 +139,28 @@ class AuditOrchestrator:
 
     async def _run_hunt(self, recon: ReconResult) -> HuntResult:
         self.app.note("Phase: HUNT", tags=["audit", "hunt"])
+        include_paths = self.config.include_paths
+        if self.is_pr_mode and self.diff_analysis and self.diff_analysis.changed_files:
+            include_paths = self.diff_analysis.all_relevant_files
+            self.app.note(
+                (
+                    f"PR-mode: scanning {self.diff_analysis.file_count} files "
+                    f"({len(self.diff_analysis.changed_files)} changed + "
+                    f"{len(self.diff_analysis.blast_radius_files)} blast radius)"
+                ),
+                tags=["audit", "hunt", "pr-mode"],
+            )
         hunt = await run_hunt(
             app=_PhaseHarnessProxy(self, "hunt"),
             repo_path=str(self.repo_path),
             recon_result=recon,
             depth=self.input.depth,
+            max_concurrent_hunters=self.budget_config.max_concurrent_hunters,
+            early_stop_file_threshold=self.budget_config.hunter_early_stop_file_threshold,
+            include_paths=include_paths,
         )
+        recon_findings = extract_recon_findings(recon)
+        hunt = merge_recon_findings_into_hunt(hunt, recon_findings)
         self._emit_progress(phase="hunt", agents_total=1, agents_completed=1, findings_so_far=len(hunt.findings))
         return hunt
 
@@ -148,11 +184,76 @@ class AuditOrchestrator:
             repo_path=str(self.repo_path),
             hunt_result=limited_hunt,
             depth=self.input.depth,
+            max_concurrent_provers=self.budget_config.max_concurrent_provers,
         )
+
+        # Assess reachability for findings without explicit reachability tags
+        reachability_tags = {"externally_reachable", "requires_auth", "internal_only", "unreachable"}
+        for finding in verified:
+            if not any(tag in reachability_tags for tag in finding.tags):
+                try:
+                    summary = (
+                        f"Finding: {finding.title}\n"
+                        f"Description: {finding.description}\n"
+                        f"CWE: {finding.cwe_id}\n"
+                        f"File: {finding.location.file_path}:{finding.location.start_line}\n"
+                        f"Verdict: {finding.verdict.value}"
+                    )
+                    gate_result = await self.ai_gate.assess_reachability(summary)
+                    finding.tags.append(gate_result.reachability)
+                except Exception:
+                    finding.tags.append("requires_auth")  # safe default
+
+        self.prove_drop_summary = {"demoted_total": 0, "by_reason": {}, "findings": []}
+        for finding in verified:
+            if finding.drop_reason:
+                self._track_drop(
+                    finding_title=finding.title,
+                    original_verdict=None,
+                    reason=finding.drop_reason,
+                )
+
+        if getattr(self.input, "enable_dast", False):
+            self.app.note("DAST-like runtime verification enabled", tags=["audit", "prove", "dast"])
+            await self._run_dast_verification(verified)
+
         self._emit_progress(phase="prove", agents_total=1, agents_completed=1, findings_so_far=len(verified))
         return verified
 
-    def _generate_output(
+    async def _run_dast_verification(self, verified: list[VerifiedFinding]) -> None:
+        run_dast_verifier = cast("Any", import_module("sec_af.agents.prove.dast_verifier").run_dast_verifier)
+        confirmed = [finding for finding in verified if finding.verdict == Verdict.CONFIRMED]
+        if not confirmed:
+            self.app.note("No confirmed findings available for DAST step", tags=["audit", "prove", "dast"])
+            return
+
+        for finding in confirmed:
+            try:
+                dast_result = await run_dast_verifier(_PhaseHarnessProxy(self, "prove"), str(self.repo_path), finding)
+            except Exception as exc:
+                finding.tags.append("dast_error")
+                self.app.note(
+                    f"DAST verifier failed for '{finding.title}': {exc}",
+                    tags=["audit", "prove", "dast", "error"],
+                )
+                continue
+
+            finding.tags.append("dast_attempted" if dast_result.exploit_attempted else "dast_skipped")
+            finding.tags.append("dast_confirmed" if dast_result.exploit_succeeded else "dast_not_confirmed")
+            finding.rationale = f"{finding.rationale}\nDAST: {dast_result.response_analysis}"
+
+            if finding.proof is not None:
+                finding.proof.poc_execution_output = json.dumps(
+                    {
+                        "exploit_attempted": dast_result.exploit_attempted,
+                        "exploit_succeeded": dast_result.exploit_succeeded,
+                        "evidence": dast_result.evidence,
+                        "confidence": dast_result.confidence,
+                    },
+                    indent=2,
+                )
+
+    async def _generate_output(
         self,
         *,
         recon: ReconResult,
@@ -160,12 +261,22 @@ class AuditOrchestrator:
         verified: list[VerifiedFinding],
     ) -> SecurityAuditResult:
         _ = recon
+        severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+        threshold_value = severity_order.get(self.input.severity_threshold.lower(), 0)
+        if threshold_value > 0:
+            verified = [
+                finding
+                for finding in verified
+                if severity_order.get(finding.severity.value.lower(), 0) >= threshold_value
+            ]
+
         for finding in verified:
             finding.exploitability_score = compute_exploitability_score(finding)
             finding.sarif_security_severity = finding.exploitability_score
-            finding.compliance = get_compliance_mappings(
+            finding.compliance = await get_compliance_mappings_hybrid(
                 finding.cwe_id,
                 frameworks=self.input.compliance_frameworks or None,
+                ai_gate=self.ai_gate,
             )
 
         verdict_counts: dict[Verdict, int] = {
@@ -224,12 +335,24 @@ class AuditOrchestrator:
             agent_invocations=self.agent_invocations,
             cost_usd=round(self.total_cost_usd, 4),
             cost_breakdown={phase: round(cost, 4) for phase, cost in self.cost_breakdown.items()},
+            metadata={
+                "findings_not_verified": self.findings_not_verified,
+                "prove_drop_summary": self.prove_drop_summary,
+            },
             sarif="",
         )
 
         result.sarif = generate_sarif(result)
         _ = generate_json(result, pretty=True)
         _ = generate_report(result)
+        if self.input.compliance_frameworks:
+            from .output.compliance_report import generate_compliance_report
+
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            for framework in self.input.compliance_frameworks:
+                compliance_report = generate_compliance_report(result, framework)
+                report_path = self.checkpoint_dir / f"compliance-{framework}.md"
+                report_path.write_text(compliance_report, encoding="utf-8")
         return result
 
     def _write_checkpoint(self, phase: str, payload: BaseModel | list[VerifiedFinding]) -> None:
@@ -254,6 +377,14 @@ class AuditOrchestrator:
         rows = payload.get("data", [])
         return [schema(**row) for row in rows]
 
+    def _try_load_cached_recon(self) -> ReconResult | None:
+        """Try to load cached recon from previous full scan."""
+
+        try:
+            return self._read_checkpoint("recon", ReconResult)
+        except (FileNotFoundError, Exception):
+            return None
+
     def _checkpoint_path(self, phase: str) -> Path:
         return self.checkpoint_dir / f"checkpoint-{phase}.json"
 
@@ -266,6 +397,8 @@ class AuditOrchestrator:
     def _default_strategies(self, recon: ReconResult) -> list[HuntStrategy]:
         strategies: list[HuntStrategy] = [
             HuntStrategy.INJECTION,
+            HuntStrategy.DOS,
+            HuntStrategy.SSRF,
             HuntStrategy.AUTH,
             HuntStrategy.DATA_EXPOSURE,
             HuntStrategy.CONFIG_SECRETS,
@@ -279,7 +412,7 @@ class AuditOrchestrator:
 
         depth = self._depth_profile()
         if depth in {DepthProfile.STANDARD, DepthProfile.THOROUGH}:
-            strategies.append(HuntStrategy.LOGIC_BUGS)
+            strategies.append(HuntStrategy.BUSINESS_LOGIC)
         if depth == DepthProfile.THOROUGH and "python" in {lang.lower() for lang in recon.languages}:
             strategies.append(HuntStrategy.PYTHON_SPECIFIC)
         if depth == DepthProfile.THOROUGH and any(
@@ -333,7 +466,12 @@ class AuditOrchestrator:
     def _phase_budget_limit(self, phase: str) -> float | None:
         if self.max_cost_usd is None:
             return None
-        return self.max_cost_usd * self._PHASE_BUDGETS[phase]
+        weights = {
+            "recon": self.budget_config.recon_budget_pct,
+            "hunt": self.budget_config.hunt_budget_pct,
+            "prove": self.budget_config.prove_budget_pct,
+        }
+        return self.max_cost_usd * weights[phase]
 
     def _check_cost_budget(self, phase: str) -> None:
         if self.max_cost_usd is not None and self.total_cost_usd >= self.max_cost_usd:
@@ -377,6 +515,23 @@ class AuditOrchestrator:
         )
         self.app.note(progress.model_dump_json(), tags=["audit", "progress", phase])
 
+    def _track_drop(self, *, finding_title: str, original_verdict: str | None, reason: str) -> None:
+        self.prove_drop_summary["demoted_total"] = int(self.prove_drop_summary.get("demoted_total", 0)) + 1
+        by_reason = cast("dict[str, int]", self.prove_drop_summary.setdefault("by_reason", {}))
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+        findings = cast("list[dict[str, str | None]]", self.prove_drop_summary.setdefault("findings", []))
+        findings.append(
+            {
+                "title": finding_title,
+                "original_verdict": original_verdict,
+                "reason": reason,
+            }
+        )
+        self.app.note(
+            f"Demoted finding '{finding_title}' (verdict={original_verdict or 'unknown'}): {reason}",
+            tags=["audit", "prove", "drop"],
+        )
+
 
 def _verified_finding_fallback(finding: RawFinding) -> VerifiedFinding:
     return VerifiedFinding(
@@ -403,4 +558,24 @@ def _verified_finding_fallback(finding: RawFinding) -> VerifiedFinding:
         ),
         sarif_rule_id=f"sec-af/{finding.finding_type.value}/{finding.cwe_id.lower()}",
         sarif_security_severity=0.0,
+    )
+
+
+def merge_recon_findings_into_hunt(hunt: HuntResult, recon_findings: list[RawFinding]) -> HuntResult:
+    if not recon_findings:
+        return hunt
+
+    merged_findings = [*recon_findings, *hunt.findings]
+    strategies_run = list(hunt.strategies_run)
+    if "recon" not in strategies_run:
+        strategies_run.insert(0, "recon")
+
+    return HuntResult(
+        findings=merged_findings,
+        chains=hunt.chains,
+        total_raw=hunt.total_raw + len(recon_findings),
+        deduplicated_count=len(merged_findings),
+        chain_count=hunt.chain_count,
+        strategies_run=strategies_run,
+        hunt_duration_seconds=hunt.hunt_duration_seconds,
     )

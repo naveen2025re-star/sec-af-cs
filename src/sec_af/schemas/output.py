@@ -6,7 +6,6 @@ See DESIGN.md §7 and §12.3 for output payloads and progress reporting.
 from __future__ import annotations
 
 from datetime import datetime
-
 from pydantic import BaseModel, Field
 
 from .compliance import ComplianceGap
@@ -73,6 +72,54 @@ class ReproductionStep(BaseModel):
     expected_output: str | None = None
 
 
+class ServiceDefinition(BaseModel):
+    """Service node in a multi-repo architecture."""
+
+    name: str
+    repo_url: str
+    api_endpoints: list[str] = Field(default_factory=list)
+    dependencies: list[str] = Field(default_factory=list, description="Names of services this depends on")
+
+
+class CrossServiceFinding(BaseModel):
+    """Flat schema for cross-service attack chain analysis. 4 fields."""
+
+    chain_description: str = Field(description="Description of the cross-service attack path")
+    services_involved: list[str] = Field(description="Service names in the attack chain")
+    entry_point: str = Field(description="Public-facing entry point where attack begins")
+    impact: str = Field(description="Impact if the cross-service chain is exploited")
+
+
+class RegressionFinding(BaseModel):
+    """A finding that appeared since the baseline scan."""
+
+    finding_title: str
+    finding_id: str
+    severity: str
+    cwe_id: str
+    status: str = Field(description='One of: "new", "fixed", "unchanged"')
+
+
+class MonitoringResult(BaseModel):
+    """Result of comparing current scan against baseline."""
+
+    baseline_commit: str
+    current_commit: str
+    new_findings: list[RegressionFinding] = Field(default_factory=list)
+    fixed_findings: list[RegressionFinding] = Field(default_factory=list)
+    unchanged_count: int = 0
+    regression_detected: bool = False
+
+
+class PolicyViolation(BaseModel):
+    """A violation of an org-specific security policy."""
+
+    policy: str = Field(description="The policy rule that was violated")
+    violation_description: str = Field(description="How the code violates this policy")
+    file_path: str = Field(description="File where violation was found")
+    severity: str = Field(default="medium", description="Severity of the violation")
+
+
 class SecurityAuditResult(BaseModel):
     """DESIGN.md §7.3 top-level SEC-AF audit output."""
 
@@ -93,15 +140,17 @@ class SecurityAuditResult(BaseModel):
     noise_reduction_pct: float = 0.0
     by_severity: dict[str, int] = Field(default_factory=dict)
     compliance_gaps: list[ComplianceGap] = Field(default_factory=list)
+    policy_violations: list[PolicyViolation] = Field(default_factory=list)
     duration_seconds: float = 0.0
     agent_invocations: int = 0
     cost_usd: float = 0.0
     cost_breakdown: dict[str, float] = Field(default_factory=dict)
+    metadata: dict[str, object] = Field(default_factory=dict)
     sarif: str
 
 
 # Resolve forward references now that VerifiedFinding is available
-SecurityAuditResult.model_rebuild()
+_ = SecurityAuditResult.model_rebuild()
 
 
 class AuditProgress(BaseModel):

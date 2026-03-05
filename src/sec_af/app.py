@@ -131,6 +131,7 @@ async def audit(
     pr_id: str | None = None,
     post_pr_comments: bool = False,
     fail_on_findings: bool = False,
+    enable_dast: bool = False,
     resume_from_checkpoint: str | None = None,
 ) -> dict[str, object]:
     audit_input = AuditInput(
@@ -152,6 +153,7 @@ async def audit(
         pr_id=pr_id,
         post_pr_comments=post_pr_comments,
         fail_on_findings=fail_on_findings,
+        enable_dast=enable_dast,
     )
     orchestrator = AuditOrchestrator(app=app, input=audit_input)
     repo_path = _resolve_repo(repo_url)
@@ -194,10 +196,22 @@ async def audit(
             prove_dict = _as_dict(_unwrap(prove_raw, "prove_phase"), "prove_phase")
             verified = [VerifiedFinding.model_validate(v) for v in prove_dict["verified"]]
             orchestrator.findings_not_verified = prove_dict.get("not_verified", 0)
+            orchestrator.prove_drop_summary = prove_dict.get(
+                "drop_summary",
+                {"demoted_total": 0, "by_reason": {}, "findings": []},
+            )
             orchestrator._write_checkpoint("prove", verified)
 
+            remediation_raw = await app.call(
+                f"{NODE_ID}.remediation_phase",
+                repo_path=repo_path,
+                verified_findings=[v.model_dump() for v in verified],
+            )
+            remediation_dict = _as_dict(_unwrap(remediation_raw, "remediation_phase"), "remediation_phase")
+            verified = [VerifiedFinding.model_validate(v) for v in remediation_dict["verified"]]
+
             orchestrator.agent_invocations = prove_dict.get("total_selected", 0) + len(hunt.strategies_run) + 3
-            result = orchestrator._generate_output(recon=recon, hunt=hunt, verified=verified)
+            result = await orchestrator._generate_output(recon=recon, hunt=hunt, verified=verified)
             app.note("SEC-AF audit complete", tags=["audit", "complete"])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc

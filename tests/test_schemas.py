@@ -101,6 +101,7 @@ def test_enum_values_are_stable() -> None:
     assert Confidence.HIGH.value == "high"
     assert Verdict.CONFIRMED.value == "confirmed"
     assert EvidenceLevel.FULL_EXPLOIT == 6
+    assert HuntStrategy.DOS.value == "dos"
     assert HuntStrategy.CONFIG_SECRETS.value == "config_secrets"
 
 
@@ -167,6 +168,16 @@ def test_recon_hunt_output_and_gate_models_instantiate() -> None:
         cwe_ids=["CWE-79", "CWE-89"],
     )
     gate = gates.SeverityClassification(severity="high", confidence=0.9, rationale="validated")
+    compliance_gate = gates.ComplianceGate(
+        mappings=[
+            gates.ComplianceSuggestion(
+                framework="OWASP",
+                control_id="A03:2021",
+                control_name="Injection",
+            )
+        ],
+        confidence="high",
+    )
 
     assert recon.lines_of_code == 1200
     assert hunt.total_raw == 2
@@ -175,6 +186,7 @@ def test_recon_hunt_output_and_gate_models_instantiate() -> None:
     assert metrics.budget_exhausted is False
     assert compliance.framework == "PCI-DSS"
     assert gate.severity == "high"
+    assert compliance_gate.mappings[0].framework == "OWASP"
 
 
 def test_model_validate_accepts_nested_dictionaries() -> None:

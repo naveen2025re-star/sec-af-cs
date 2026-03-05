@@ -4,6 +4,7 @@ See DESIGN.md §9 for depth profiles and budget controls.
 """
 
 import os
+import tempfile
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -25,9 +26,12 @@ class BudgetConfig(BaseModel):
     max_cost_usd: float | None = None
     max_provers: int | None = None
     max_duration_seconds: int | None = None
-    recon_budget_pct: float = 0.15
-    hunt_budget_pct: float = 0.35
-    prove_budget_pct: float = 0.50
+    recon_budget_pct: float = 0.10
+    hunt_budget_pct: float = 0.45
+    prove_budget_pct: float = 0.45
+    max_concurrent_hunters: int = 4
+    max_concurrent_provers: int = 3
+    hunter_early_stop_file_threshold: int = 30
 
 
 class AuditConfig(BaseModel):
@@ -108,4 +112,8 @@ class AIIntegrationConfig(BaseModel):
             "GITHUB_TOKEN",
             "GH_TOKEN",
         )
-        return {key: value for key in env_keys if (value := os.getenv(key))}
+        env: dict[str, str] = {key: value for key in env_keys if (value := os.getenv(key))}
+        xdg = os.getenv("XDG_DATA_HOME") or os.path.join(tempfile.gettempdir(), "opencode-shared-data")
+        os.makedirs(xdg, exist_ok=True)
+        env["XDG_DATA_HOME"] = xdg
+        return env
