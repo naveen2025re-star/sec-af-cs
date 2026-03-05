@@ -46,6 +46,7 @@ class HuntStrategy(str, Enum):
     INJECTION = "injection"
     XSS = "xss"
     DOS = "dos"
+    SSRF = "ssrf"
     AUTH = "auth"
     CRYPTO = "crypto"
     LOGIC_BUGS = "logic_bugs"

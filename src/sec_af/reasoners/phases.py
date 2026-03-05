@@ -175,6 +175,7 @@ def _default_strategies(recon: ReconResult, depth: str) -> list[HuntStrategy]:
     strategies: list[HuntStrategy] = [
         HuntStrategy.INJECTION,
         HuntStrategy.DOS,
+        HuntStrategy.SSRF,
         HuntStrategy.AUTH,
         HuntStrategy.DATA_EXPOSURE,
         HuntStrategy.CONFIG_SECRETS,

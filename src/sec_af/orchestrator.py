@@ -289,6 +289,7 @@ class AuditOrchestrator:
         strategies: list[HuntStrategy] = [
             HuntStrategy.INJECTION,
             HuntStrategy.DOS,
+            HuntStrategy.SSRF,
             HuntStrategy.AUTH,
             HuntStrategy.DATA_EXPOSURE,
             HuntStrategy.CONFIG_SECRETS,
