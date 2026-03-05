@@ -306,6 +306,14 @@ class AuditOrchestrator:
         result.sarif = generate_sarif(result)
         _ = generate_json(result, pretty=True)
         _ = generate_report(result)
+        if self.input.compliance_frameworks:
+            from .output.compliance_report import generate_compliance_report
+
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            for framework in self.input.compliance_frameworks:
+                compliance_report = generate_compliance_report(result, framework)
+                report_path = self.checkpoint_dir / f"compliance-{framework}.md"
+                report_path.write_text(compliance_report, encoding="utf-8")
         return result
 
     def _write_checkpoint(self, phase: str, payload: BaseModel | list[VerifiedFinding]) -> None:
