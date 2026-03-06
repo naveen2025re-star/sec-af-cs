@@ -6,7 +6,9 @@ These are complex `.harness()` schemas from DESIGN.md §6.3-§6.4 and §7.1.
 from enum import Enum, IntEnum
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, Field, field_validator
 
 from .compliance import ComplianceMapping
 from .hunt import FindingType, Severity
@@ -40,6 +42,29 @@ class DataFlowTrace(BaseModel):
     steps: list[str] = Field(description="Ordered list of file:line descriptions showing flow path")
     sink_reached: bool = Field(description="Whether tainted data actually reaches the sink")
 
+    @field_validator("source", "sink", mode="before")
+    @classmethod
+    def _coerce_to_str(cls, v: Any) -> str:
+        """LLMs sometimes return dicts/lists instead of flat strings — coerce gracefully."""
+        if isinstance(v, str):
+            return v
+        if isinstance(v, dict):
+            # Try common keys the LLM might use
+            for key in ("value", "name", "description", "path", "text"):
+                if key in v and isinstance(v[key], str):
+                    return v[key]
+            # Fallback: stringify the dict
+            return str(v) if v else "unknown"
+        return str(v) if v else "unknown"
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def _coerce_steps(cls, v: Any) -> list[str]:
+        """Ensure steps is always a list of strings."""
+        if isinstance(v, list):
+            return [str(item) if not isinstance(item, str) else item for item in v]
+        return [str(v)] if v else []
+
 
 class ReachabilityProof(BaseModel):
     """Flat schema for dependency reachability analysis. 4 fields."""
@@ -48,6 +73,20 @@ class ReachabilityProof(BaseModel):
     call_chain: list[str] = Field(description="Import/call chain from app code to vulnerable function")
     reachable: bool = Field(description="Whether the vulnerable function is actually called")
     direct: bool = Field(description="Whether the dependency is direct or transitive")
+
+    @field_validator("vulnerable_function", mode="before")
+    @classmethod
+    def _coerce_to_str(cls, v: Any) -> str:
+        if isinstance(v, str):
+            return v
+        return str(v) if v else "unknown"
+
+    @field_validator("call_chain", mode="before")
+    @classmethod
+    def _coerce_call_chain(cls, v: Any) -> list[str]:
+        if isinstance(v, list):
+            return [str(item) if not isinstance(item, str) else item for item in v]
+        return [str(v)] if v else []
 
 
 class SanitizationResult(BaseModel):
@@ -71,6 +110,22 @@ class ExploitHypothesis(BaseModel):
     hypothesis: str = Field(description="Natural language description of exploit scenario")
     payload: str | None = Field(default=None, description="Concrete exploit payload or input")
     expected_outcome: str = Field(description="What would happen if exploit succeeds")
+
+    @field_validator("hypothesis", "expected_outcome", mode="before")
+    @classmethod
+    def _coerce_to_str(cls, v: Any) -> str:
+        if isinstance(v, str):
+            return v
+        return str(v) if v else "unknown"
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def _coerce_payload(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v
+        return str(v)
 
 
 class DastVerificationResult(BaseModel):

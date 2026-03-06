@@ -25,6 +25,15 @@ class HarnessCapable(Protocol):
         **kwargs: object,
     ) -> object: ...
 
+    async def ai(
+        self,
+        *,
+        user: str,
+        schema: type,
+        system: str | None = None,
+        **kwargs: object,
+    ) -> object: ...
+
 
 def _sarif_rule_id(finding: RawFinding) -> str:
     cwe_slug = finding.cwe_name.lower().replace(" ", "-").replace("/", "-")
@@ -72,7 +81,6 @@ def fallback(
 
 
 async def run_verifier(app: HarnessCapable, repo_path: str, finding: RawFinding, depth: str) -> VerifiedFinding:
-    tracer_task = run_tracer(app=app, repo_path=repo_path, finding=finding, depth=depth)
     seed_trace = DataFlowTrace(
         source=f"{finding.file_path}:{finding.start_line}",
         sink=finding.function_name or finding.file_path,
@@ -81,6 +89,7 @@ async def run_verifier(app: HarnessCapable, repo_path: str, finding: RawFinding,
         else [],
         sink_reached=False,
     )
+    tracer_task = run_tracer(app=app, repo_path=repo_path, finding=finding, depth=depth)
     sanitization_task = run_sanitization_analyzer(
         app=app,
         repo_path=repo_path,
@@ -88,7 +97,20 @@ async def run_verifier(app: HarnessCapable, repo_path: str, finding: RawFinding,
         data_flow_trace=seed_trace,
         depth=depth,
     )
-    data_flow_trace, sanitization = await asyncio.gather(tracer_task, sanitization_task)
+    results = await asyncio.gather(tracer_task, sanitization_task, return_exceptions=True)
+    tracer_result, sanitization_result = results[0], results[1]
+
+    if isinstance(tracer_result, BaseException):
+        data_flow_trace = seed_trace
+    else:
+        data_flow_trace = tracer_result
+
+    if isinstance(sanitization_result, BaseException):
+        from sec_af.schemas.prove import SanitizationResult
+
+        sanitization = SanitizationResult(found=False, sufficient=None, bypass_method=None)
+    else:
+        sanitization = sanitization_result
 
     exploit = await run_exploit_hypothesizer(
         app=app,
