@@ -61,7 +61,7 @@ This is a real finding from SEC-AF auditing [DVGA](https://github.com/dolevf/Dam
 
 Every finding includes a **verdict** (`confirmed` / `likely` / `inconclusive` / `not_exploitable`), a **proof object** with the full taint trace, and the exact code location. Not "this might be a problem." SEC-AF traces data from source to sink and proves whether it's actually exploitable.
 
-> Full benchmark output (30 findings): [`exampl/dvga-benchmark-result.json`](exampl/dvga-benchmark-result.json)
+> Full benchmark output (30 findings): [`exampl/dvga-benchmark-result.json`](exampl/dvga-benchmark-result.json) | Performance analysis: [`exampl/benchmark-analysis.json`](exampl/benchmark-analysis.json)
 
 ## Benchmark: DVGA
 
@@ -75,9 +75,11 @@ We run SEC-AF against [Damn Vulnerable GraphQL Application](https://github.com/d
 | Inconclusive (needs manual review) | 1 |
 | Not exploitable (correctly rejected) | 1 |
 | Noise reduction | 94% |
-| DAG edges (reasoner calls) | 83 |
-| Total LLM calls | ~235 |
+| DAG edges (reasoner calls) | 82 |
+| Agent calls | ~166–255 |
 | Strategies run | 11 |
+| Wall-clock time | ~78 min |
+| Estimated cost (Kimi K2.5) | ~$0.18–$0.90 |
 
 <details>
 <summary><strong>Breakdown: 30 verified findings by category</strong></summary>
@@ -93,6 +95,41 @@ We run SEC-AF against [Damn Vulnerable GraphQL Application](https://github.com/d
 | Business Logic / URL Sanitization | 2 | Inadequate URL sanitization, unauthenticated mass deletion |
 | DoS / Resource Exhaustion | 3 | Missing pagination on users/audits queries, uncontrolled simulate_load |
 | Config / Secrets | 2 | Hardcoded JWT/Flask secrets, debug mode enabled in production |
+
+</details>
+
+<details>
+<summary><strong>Design patterns: how AI-native security analysis works</strong></summary>
+
+SEC-AF applies several architectural patterns that are uniquely enabled by composing many focused AI agents instead of running one monolithic scan. These patterns address fundamental challenges in AI-driven security analysis.
+
+**1. Adversarial agent tension (HUNT vs. PROVE)**
+
+Most AI security tools ask a single model "is this vulnerable?" and accept the answer. SEC-AF structurally separates the _finding_ agents from the _disproving_ agents. Hunters are incentivized to find vulnerabilities; provers are incentivized to disprove them. Each finding passes through a 4-agent verification chain — a tracer reconstructs the data flow, a sanitization analyzer looks for mitigations the hunter may have missed, an exploit hypothesizer constructs a concrete attack scenario, and a verdict agent weighs all the conflicting evidence. This adversarial tension between agents is what drives the 94% noise reduction — the architecture itself encodes skepticism.
+
+**2. Signal cascade with progressive narrowing**
+
+Instead of dumping all findings on the user, the pipeline compresses signal at every stage: 106 raw findings → 61 after AI deduplication → 30 after adversarial verification. Each phase is a filter. This mirrors how human security teams triage — broad discovery first, then progressively stricter scrutiny. The key insight is that each filter is a _different kind_ of AI reasoning: semantic similarity for dedup, taint analysis for verification, exploit construction for confirmation.
+
+**3. Information economy via context pruning**
+
+LLMs hallucinate more when given irrelevant context. SEC-AF routes only the information each agent needs: an injection hunter receives the recon context pruned to data flow maps and input entry points, while a crypto hunter receives dependency trees and key management patterns. Verifiers receive projected finding views with only the fields needed for their specific verification method. This per-strategy context pruning reduces both hallucination and cost — agents can't confuse themselves with information they never see.
+
+**4. Streaming phase overlap**
+
+Traditional pipelines run sequentially: finish recon, then start hunting, then start proving. SEC-AF overlaps phases via `asyncio.Queue` — hunters start consuming recon output as it arrives, and dedup processes findings as each hunter completes. Provers begin verifying the first deduplicated findings while later hunters are still running. This streaming architecture reduces wall-clock time without sacrificing the signal cascade — each finding still passes through every filter, just earlier.
+
+**5. Dynamic routing via AI gates**
+
+The pipeline adapts at runtime based on what it discovers. An AI gate examines recon output and selects which hunt strategies to activate — a Flask app with JWT auth triggers different hunters than a Go microservice with gRPC. A separate CWE expansion gate dynamically broadens the vulnerability target list based on the detected technology stack. A reachability gate assesses whether dependency vulnerabilities have exploitable call paths before wasting verification resources on unreachable code.
+
+**6. Guided autonomy for coding agents**
+
+SEC-AF runs on top of coding agents (Claude Code, OpenCode, Codex) via the AgentField harness. Rather than giving the agent a single massive prompt, each reasoner provides phase-aware guided autonomy: the agent receives a narrow task definition, a flat output schema (2-4 fields), and strategy-specific context. The agent has full autonomy within these boundaries — it can read files, trace code, and reason freely — but the harness constrains the _shape_ of its output. This prevents the common failure mode where autonomous agents go off-task or produce unstructured results.
+
+**7. Composable reasoner DAG with full observability**
+
+Every agent call flows through the AgentField control plane, creating a complete directed acyclic graph of the audit. You can see which hunter found which finding, how long each verification took, what evidence the prover generated, and where the pipeline spent its time. Adding a new vulnerability class is one file — a new hunter. The orchestrator discovers it, routes context to it, and integrates its findings into the existing dedup → prove → remediation pipeline. The DAG is the architecture.
 
 </details>
 
@@ -133,7 +170,7 @@ Most AI security tools run one big prompt and hope the LLM gets it right. SEC-AF
 - **Many focused agents > one powerful agent.** A single LLM call can't simultaneously map architecture, trace data flows, hunt for injection, verify exploitability, and suggest fixes. SEC-AF gives each of those to a separate reasoner that does one thing well. The orchestrator handles composition, parallelism, and context routing.
 - **Adversarial verification, not confirmation bias.** The PROVE phase runs 4 sub-agents per finding with opposing goals: the tracer reconstructs the data flow, the sanitization analyzer looks for blocks, the exploit hypothesizer constructs an attack, and the verdict agent weighs all the evidence. This tension between agents produces higher confidence than asking a single model "is this exploitable?"
 - **Dynamic routing via AI gates.** The system adapts at runtime. An AI gate examines recon output and selects which hunt strategies to activate. A separate gate expands the CWE target list based on the detected stack. A Flask app with JWT auth gets different hunters than a Go microservice with gRPC.
-- **Progressive signal narrowing.** 89 raw findings become 55 after dedup, then 30 after adversarial verification. Each phase is a filter. The pipeline compresses noise, it doesn't just detect vulnerabilities and dump them.
+- **Progressive signal narrowing.** 106 raw findings become 61 after dedup, then 30 after adversarial verification — 94% noise reduction. Each phase is a filter. The pipeline compresses noise, it doesn't just detect vulnerabilities and dump them.
 - **Information economy.** Each agent sees only what it needs. Hunters receive recon context pruned for their strategy. Verifiers receive projected finding views with minimal fields. This reduces hallucination, reduces cost, and keeps each LLM call focused.
 - **Incremental streaming.** Dedup runs as a consumer while hunters are still producing. Findings are fingerprint-deduplicated as each hunter completes, then a final semantic pass catches cross-strategy duplicates. The pipeline streams, it doesn't batch.
 
@@ -154,7 +191,7 @@ Most AI security tools run one big prompt and hope the LLM gets it right. SEC-AF
 | **SARIF** | ✅ Native 2.1.0 | Not documented | ✅ | ✅ | ✅ Native |
 | **Compliance mapping** | PCI-DSS, SOC2, OWASP, HIPAA, ISO27001 | Not documented | Platform compliance only | OWASP rules available | - |
 | **Languages** | Any LLM-supported language | Not documented | 14+ | 35+ (parser-based) | 10 |
-| **Pricing** | **Free · open source** (~$1.50/audit in LLM costs) | **$6,000/mo** | $25-105/mo/developer | OSS engine: free to use · Pro: $30/mo/contributor | Free for public repos · $49/mo/committer (GHAS) |
+| **Pricing** | **Free · open source** (~$0.18–$0.90/audit in LLM costs) | **$6,000/mo** | $25-105/mo/developer | OSS engine: free to use · Pro: $30/mo/contributor | Free for public repos · $49/mo/committer (GHAS) |
 
 **Where SEC-AF is strongest**: Verified findings with proof objects, transparent scoring, compliance mapping, composable multi-agent architecture with full DAG observability, and fully open source.
 
@@ -168,7 +205,7 @@ Traditional security scanners are monolithic: one engine, one pass, one set of r
 - **Composability**: Add a new vulnerability class by adding one hunter file. The orchestrator discovers and runs it automatically. No changes to the pipeline.
 - **Adversarial verification**: The PROVE phase is structurally separate from HUNT. Hunters try to find vulnerabilities; provers try to disprove them. This adversarial tension reduces false positives.
 - **Observability**: Every reasoner call flows through the control plane, creating a complete DAG. You can see exactly which hunter found which finding, how long each phase took, and what the LLM reasoned at each step.
-- **Cost efficiency**: Context pruning and schema views mean each LLM call receives only the context it needs. A full audit with 30+ verified findings costs ~$1.50 in LLM calls.
+- **Cost efficiency**: Context pruning and schema views mean each LLM call receives only the context it needs. A full standard-depth audit with 30 verified findings costs an estimated ~$0.18–$0.90 in LLM calls (Kimi K2.5 via OpenRouter).
 
 ## Quick Start
 
@@ -225,13 +262,11 @@ curl -X POST http://localhost:8080/api/v1/execute/async/sec-af.audit \
 
 | Profile | Strategies | Verification | Typical time | Typical cost |
 |---|---|---|---|---|
-| Profile | Strategies | Verification | Typical time | Typical cost |
-|---|---|---|---|---|
 | `quick` | 5 core strategies | Top findings only | 2-5 min | ~$0.10-0.40 |
-| `standard` | 11 strategies (core + extended) | Top 30 findings | 15-80 min | ~$0.50-2 |
+| `standard` | 11 strategies (core + extended) | Top 30 findings | 15-80 min | ~$0.18-0.90 |
 | `thorough` | Full strategy set | All findings | 30-120 min | ~$2-8 |
 
-Costs based on Kimi K2.5 via OpenRouter ($0.22/M input, $0.88/M output). The DVGA benchmark (standard depth, 30 verified findings, ~235 LLM calls, 83 DAG edges) cost roughly **$1.37**. Any OpenRouter-compatible model works — set `HARNESS_MODEL` and `AI_MODEL` to switch.
+Costs based on Kimi K2.5 via OpenRouter ($0.22/M input, $0.88/M output). The DVGA benchmark (standard depth, 30 verified findings, ~166-255 estimated LLM calls, 82 DAG edges) cost an estimated **$0.18–$0.90**. Full analysis: [`exampl/benchmark-analysis.json`](exampl/benchmark-analysis.json). Any OpenRouter-compatible model works — set `HARNESS_MODEL` and `AI_MODEL` to switch.
 
 </details>
 
