@@ -368,7 +368,7 @@ jobs:
 
 </details>
 
-## Development
+## Development Setup
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
