@@ -377,8 +377,6 @@ pytest
 ruff check src tests
 ```
 
-Architecture: [`docs/DESIGN.md`](docs/DESIGN.md)
-
 ---
 
 <div align="center">
