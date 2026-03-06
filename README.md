@@ -19,7 +19,7 @@
 
 </div>
 
-Other tools flag patterns. SEC-AF **proves exploitability**: every finding ships with a verdict, a data flow trace, and evidence you can act on. Free, open source, one API call. A full audit with 30 verified findings costs about **$1.50 in LLM calls**.
+Other tools flag patterns. SEC-AF **proves exploitability**: every finding ships with a verdict, a data flow trace, and evidence you can act on. Free, open source, one API call. A full audit with 30 verified findings costs about **$1.40 in LLM calls**.
 
 <p align="center">
   <img src="assets/hero-b-swarm.png" alt="SEC-AF — AI-native security auditor" width="100%" />
@@ -69,27 +69,30 @@ We run SEC-AF against [Damn Vulnerable GraphQL Application](https://github.com/d
 
 | Metric | Value |
 |---|---|
-| Raw findings discovered | 89 |
-| After AI deduplication | 55 |
-| **After adversarial verification** | **30 confirmed** |
-| DVGA official scenarios detected | 12 / 21 (57%) |
-| Findings beyond the official list | **16 additional** |
-| False positive rate | 3% (1/30) |
+| Raw findings discovered | 106 |
+| After AI deduplication | 61 |
+| **After adversarial verification** | **28 confirmed** |
+| Inconclusive (needs manual review) | 1 |
+| Not exploitable (correctly rejected) | 1 |
+| Noise reduction | 94% |
+| DAG edges (reasoner calls) | 83 |
+| Total LLM calls | ~235 |
+| Strategies run | 11 |
 
 <details>
 <summary><strong>Breakdown: 30 verified findings by category</strong></summary>
 
 | Category | Count | Examples |
 |---|---|---|
-| Command Injection | 6 | `os.popen(cmd)` via 3 GraphQL resolvers, curl injection, broken allowlist bypass |
-| SQL Injection | 3 | Unsanitized `filter` in `resolve_pastes`, LIKE pattern injection |
-| Missing Authentication | 5 | CreatePaste, CreateUser, file upload, ImportPaste, user enumeration |
-| Authorization Bypass | 3 | BOLA on DeletePaste, IDOR on EditPaste, password disclosure |
-| Authentication Flaws | 3 | JWT signature verification disabled, hardcoded JWT secret, plaintext passwords |
-| SSRF | 1 | ImportPaste mutation follows user-supplied URLs server-side |
-| Path Traversal | 1 | Unsanitized filename in `save_file` |
-| DoS | 3 | Missing pagination on search/audit queries, infinite WebSocket loop |
-| Info Disclosure / Config | 5 | Stack traces in errors, debug mode on, disabled TLS verification |
+| Missing Authentication | 8 | ImportPaste, delete_all_pastes, system_debug, CreateUser, file upload |
+| Command Injection | 4 | `os.popen(cmd)` via ImportPaste, system_debug, system_diagnostics |
+| SQL Injection | 3 | Unsanitized `filter` in `resolve_pastes`, LIKE pattern injection, login |
+| Authentication Bypass | 3 | JWT signature disabled, JWT authorization bypass, broken password auth |
+| Plaintext Credentials | 3 | Cleartext password storage, plaintext comparison, password in diagnostics |
+| SSRF | 2 | ImportPaste mutation follows user-supplied URLs server-side |
+| Business Logic / URL Sanitization | 2 | Inadequate URL sanitization, unauthenticated mass deletion |
+| DoS / Resource Exhaustion | 3 | Missing pagination on users/audits queries, uncontrolled simulate_load |
+| Config / Secrets | 2 | Hardcoded JWT/Flask secrets, debug mode enabled in production |
 
 </details>
 
@@ -102,17 +105,66 @@ The 9 missed scenarios are primarily **GraphQL protocol-level attacks**: batch q
 
 ## How It Works
 
-SEC-AF runs a **Signal Cascade** pipeline. Each phase narrows the signal:
+SEC-AF is built on the [Composite Intelligence](https://github.com/Agent-Field/agentfield) philosophy: instead of relying on a single monolithic LLM call, it composes many focused, guided LLM calls into a **reasoner DAG** where the architecture itself encodes intelligence. Each LLM call handles a small, well-defined task with a flat Pydantic schema (2-4 attributes). The orchestrator manages context flow, parallelism, and dynamic routing.
+
+### Architecture: Reasoner Call Graph (DAG)
+
+Every phase is a `@reasoner` that calls sub-reasoners through the AgentField control plane. This creates a visible, traceable DAG:
+
+```
+audit (root reasoner)
+├── recon_phase
+│   ├── run_architecture_mapper      ─┐
+│   ├── run_dependency_auditor       ─┤ parallel (asyncio.gather)
+│   ├── run_config_scanner           ─┘
+│   ├── run_data_flow_mapper         ─┐ parallel (standard/thorough only)
+│   └── run_security_context_profiler─┘
+├── hunt_phase
+│   ├── run_injection_hunter         ─┐
+│   ├── run_dos_hunter               │
+│   ├── run_ssrf_hunter              │
+│   ├── run_auth_hunter              │
+│   ├── run_data_exposure_hunter     ─┤ parallel (semaphore=4)
+│   ├── run_xss_hunter               │ with incremental dedup
+│   ├── run_config_secrets_hunter    │
+│   ├── run_crypto_hunter            │
+│   ├── run_supply_chain_hunter      │
+│   ├── run_business_logic_hunter    │
+│   └── run_api_security_hunter      ─┘
+│   └── run_deduplicator             ← semantic dedup after all hunters
+├── prove_phase
+│   └── run_verifier × N             ← parallel (semaphore=3), adversarial
+└── remediation_phase
+    └── run_remediation × M          ← parallel (semaphore=3)
+```
+
+Each arrow is a `_runtime_router.call()` or `app.call()` that routes through the control plane, forming a real execution graph with full observability.
 
 <p align="center">
   <img src="assets/architecture.png" alt="SEC-AF Signal Cascade Pipeline — RECON → HUNT → DEDUP → PROVE → OUTPUT" width="100%" />
 </p>
 
-**Key design decisions:**
+### Signal Cascade Pipeline
 
-- **`.ai()` vs `.harness()` split**: fast gates (strategy selection, yes/no) use `.ai()`. Deep analysis (recon, hunt, prove) uses `.harness()` with multi-turn sessions. No monolithic prompts.
-- **Scan + enrich decomposition**: hunters don't produce findings in one shot. A scanner identifies locations, then an enricher analyzes each one individually. Higher evidence quality per finding.
-- **Adversarial verification**: the PROVE phase doesn't confirm findings, it tries to **disprove** them. What survives gets a verdict and evidence level.
+Each phase narrows the signal. Raw findings are filtered through progressively stricter gates:
+
+| Phase | Purpose | Parallelism |
+|---|---|---|
+| **RECON** | Map architecture, dependencies, data flows, security context | 3-way parallel (arch + deps + config), then 2-way (data flow + security) |
+| **HUNT** | Run 10+ specialized strategy hunters | Semaphore-bounded parallel (default 4 concurrent) with incremental dedup |
+| **PROVE** | Adversarial verification: try to **disprove** each finding | Semaphore-bounded parallel (default 3 concurrent) |
+| **REMEDIATION** | Generate fix suggestions for confirmed/likely findings | Semaphore-bounded parallel (default 3 concurrent) |
+
+### Why Multi-Reasoner Architecture
+
+Most AI security tools run one big prompt and hope the LLM gets it right. SEC-AF decomposes the problem into ~258 focused agent calls, each with a flat schema (2-4 fields) and a narrow task. The architecture encodes the reasoning strategy, not the prompt.
+
+- **Many focused agents > one powerful agent.** A single LLM call can't simultaneously map architecture, trace data flows, hunt for injection, verify exploitability, and suggest fixes. SEC-AF gives each of those to a separate reasoner that does one thing well. The orchestrator handles composition, parallelism, and context routing.
+- **Adversarial verification, not confirmation bias.** The PROVE phase runs 4 sub-agents per finding with opposing goals: the tracer reconstructs the data flow, the sanitization analyzer looks for blocks, the exploit hypothesizer constructs an attack, and the verdict agent weighs all the evidence. This tension between agents produces higher confidence than asking a single model "is this exploitable?"
+- **Dynamic routing via AI gates.** The system adapts at runtime. An AI gate examines recon output and selects which hunt strategies to activate. A separate gate expands the CWE target list based on the detected stack. A Flask app with JWT auth gets different hunters than a Go microservice with gRPC.
+- **Progressive signal narrowing.** 89 raw findings become 55 after dedup, then 30 after adversarial verification. Each phase is a filter. The pipeline compresses noise, it doesn't just detect vulnerabilities and dump them.
+- **Information economy.** Each agent sees only what it needs. Hunters receive recon context pruned for their strategy. Verifiers receive projected finding views with minimal fields. This reduces hallucination, reduces cost, and keeps each LLM call focused.
+- **Incremental streaming.** Dedup runs as a consumer while hunters are still producing. Findings are fingerprint-deduplicated as each hunter completes, then a final semantic pass catches cross-strategy duplicates. The pipeline streams, it doesn't batch.
 
 ## Comparison
 
@@ -121,19 +173,31 @@ SEC-AF runs a **Signal Cascade** pipeline. Each phase narrows the signal:
 | | SEC-AF | Nullify | Snyk Code | Semgrep | CodeQL |
 |---|---|---|---|---|---|
 | **Approach** | **AI-native** | **AI-native** | **AI-assisted** | **Rule-based** | **Rule-based** |
-| | LLM reasons about code | Autonomous security workforce | DeepCode AI engine | Pattern + taint matching | Semantic analysis + dataflow |
+| | Multi-reasoner DAG · LLM reasons about code | Autonomous security workforce | DeepCode AI engine | Pattern + taint matching | Semantic analysis + dataflow |
 | **Open source** | ✅ Apache 2.0 | ❌ Proprietary | ❌ Proprietary | Engine: LGPL-2.1 · Pro rules: proprietary | Queries: MIT · Engine: proprietary |
 | **Verified findings** | ✅ Adversarial PROVE phase · verdict + proof per finding | ✅ Proof-of-exploit generation | ❌ Priority Score (opaque) · no exploit proof | ❌ Pattern matches only | ❌ Static analysis alerts |
 | **Evidence per finding** | Data flow trace with taint propagation | Exploit path + reproduction steps | Source-to-sink flow shown | - | Path queries show data flow |
+| **Architecture** | Composable reasoner DAG with full observability | Monolithic agent | Single-pass engine | Rule engine | Query engine |
+| **Parallelism** | ✅ Parallel hunters, verifiers, remediators with incremental dedup | Not documented | Not documented | ✅ Rule parallelism | ✅ Query parallelism |
 | **Scoring** | ✅ Published composite formula | Internal | Opaque Priority Score | Internal | - |
 | **SARIF** | ✅ Native 2.1.0 | Not documented | ✅ | ✅ | ✅ Native |
 | **Compliance mapping** | PCI-DSS, SOC2, OWASP, HIPAA, ISO27001 | Not documented | Platform compliance only | OWASP rules available | - |
 | **Languages** | Any LLM-supported language | Not documented | 14+ | 35+ (parser-based) | 10 |
 | **Pricing** | **Free · open source** (~$1.50/audit in LLM costs) | **$6,000/mo** | $25-105/mo/developer | OSS engine: free to use · Pro: $30/mo/contributor | Free for public repos · $49/mo/committer (GHAS) |
 
-**Where SEC-AF is strongest**: Verified findings with proof objects, transparent scoring, compliance mapping, and fully open source.
+**Where SEC-AF is strongest**: Verified findings with proof objects, transparent scoring, compliance mapping, composable multi-agent architecture with full DAG observability, and fully open source.
 
 **Where others are stronger**: Semgrep and CodeQL have years of battle-tested rule coverage across 35+ languages. Snyk has deep IDE/SCA integration. Nullify adds runtime cloud context and auto-remediation campaigns. SEC-AF is newer and currently strongest on AI-driven code-level analysis.
+
+### Why Multi-Agent Architecture Matters
+
+Traditional security scanners are monolithic: one engine, one pass, one set of rules. SEC-AF's multi-reasoner architecture provides structural advantages:
+
+- **Specialization**: Each hunter is a guided LLM specialist — an injection hunter reasons differently from a crypto hunter. The architecture encodes domain knowledge in the routing, not just the prompts.
+- **Composability**: Add a new vulnerability class by adding one hunter file. The orchestrator discovers and runs it automatically. No changes to the pipeline.
+- **Adversarial verification**: The PROVE phase is structurally separate from HUNT. Hunters try to find vulnerabilities; provers try to disprove them. This adversarial tension reduces false positives.
+- **Observability**: Every reasoner call flows through the control plane, creating a complete DAG. You can see exactly which hunter found which finding, how long each phase took, and what the LLM reasoned at each step.
+- **Cost efficiency**: Context pruning and schema views mean each LLM call receives only the context it needs. A full audit with 30+ verified findings costs ~$1.50 in LLM calls.
 
 ## Quick Start
 
@@ -190,11 +254,13 @@ curl -X POST http://localhost:8080/api/v1/execute/async/sec-af.audit \
 
 | Profile | Strategies | Verification | Typical time | Typical cost |
 |---|---|---|---|---|
-| `quick` | 5 core strategies | Top findings only | 2-5 min | ~$0.10-0.50 |
-| `standard` | 11 strategies (core + extended) | Top 30 findings | 5-15 min | ~$0.50-3 |
-| `thorough` | Full strategy set | All findings | 15-45 min | ~$2-10 |
+| Profile | Strategies | Verification | Typical time | Typical cost |
+|---|---|---|---|---|
+| `quick` | 5 core strategies | Top findings only | 2-5 min | ~$0.10-0.40 |
+| `standard` | 11 strategies (core + extended) | Top 30 findings | 15-80 min | ~$0.50-2 |
+| `thorough` | Full strategy set | All findings | 30-120 min | ~$2-8 |
 
-Costs based on MiniMax M2.5 via OpenRouter ($0.295/M input, $1.20/M output). The DVGA benchmark (30 verified findings, ~258 LLM calls) cost roughly $1.50.
+Costs based on Kimi K2.5 via OpenRouter ($0.22/M input, $0.88/M output). The DVGA benchmark (standard depth, 30 verified findings, ~235 LLM calls, 83 DAG edges) cost roughly **$1.37**. Any OpenRouter-compatible model works — set `HARNESS_MODEL` and `AI_MODEL` to switch.
 
 </details>
 
@@ -287,8 +353,8 @@ jobs:
 |---|---|---|---|
 | `AGENTFIELD_SERVER` | Yes | `http://localhost:8080` | Control plane URL |
 | `OPENROUTER_API_KEY` | Yes | - | LLM provider credential |
-| `HARNESS_MODEL` | No | `minimax/minimax-m2.5` | Model for deep `.harness()` analysis |
-| `AI_MODEL` | No | `minimax/minimax-m2.5` | Model for fast `.ai()` gates |
+| `HARNESS_MODEL` | No | `moonshotai/kimi-k2.5` | Model for deep `.harness()` analysis |
+| `AI_MODEL` | No | `moonshotai/kimi-k2.5` | Model for fast `.ai()` gates and verdicts |
 | `SEC_AF_MAX_TURNS` | No | `50` | Max harness turns per call |
 | `AGENTFIELD_API_KEY` | No | unset | API key for secured environments |
 | `HARNESS_PROVIDER` | No | `opencode` | Harness backend provider |
