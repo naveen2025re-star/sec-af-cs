@@ -47,3 +47,4 @@ results/
 # Worktrees
 .worktrees/
 .docker-sdk/
+agentfield-sdk/
