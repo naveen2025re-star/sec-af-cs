@@ -251,6 +251,72 @@ Poll for results:
 curl http://localhost:8080/api/v1/executions/<execution_id>
 ```
 
+### Running Locally (Without Docker)
+
+**Prerequisites:** Python 3.11+, Git, an [OpenRouter API key](https://openrouter.ai/)
+
+**Step 1 — Clone the repo**
+
+```bash
+git clone https://github.com/Agent-Field/sec-af.git
+cd sec-af
+```
+
+**Step 2 — Create and activate a virtual environment**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+**Step 3 — Install the package**
+
+```bash
+pip install -e .
+```
+
+**Step 4 — Configure environment variables**
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and fill in your key:
+
+```
+OPENROUTER_API_KEY=sk-or-...
+```
+
+Optional — set a custom workspace directory to avoid permission issues:
+
+```
+SEC_AF_WORKSPACES_DIR=~/.sec-af/workspaces
+```
+
+**Step 5 — Start the AgentField control plane** (in a separate terminal)
+
+```bash
+af server
+```
+
+This runs on `http://localhost:8080` by default.
+
+**Step 6 — Start the SEC-AF agent** (in another terminal, with the venv active)
+
+```bash
+python3 main.py
+```
+
+The agent registers itself with the control plane and is ready to accept requests.
+
+**Step 7 — Trigger an audit**
+
+```bash
+curl -X POST http://localhost:8080/api/v1/execute/async/sec-af.audit \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"repo_url": "https://github.com/dolevf/Damn-Vulnerable-GraphQL-Application"}}'
+```
+
 ## API
 
 <details>
@@ -385,6 +451,7 @@ jobs:
 | `AI_MODEL` | No | `moonshotai/kimi-k2.5` | Model for fast `.ai()` gates and verdicts |
 | `SEC_AF_MAX_TURNS` | No | `50` | Max harness turns per call |
 | `AGENTFIELD_API_KEY` | No | unset | API key for secured environments |
+| `SEC_AF_WORKSPACES_DIR` | No | `/workspaces` | Directory for cloned repos (falls back to `~/.sec-af/workspaces` if not writable) |
 | `HARNESS_PROVIDER` | No | `opencode` | Harness backend provider |
 | `SEC_AF_AI_MAX_RETRIES` | No | `3` | Retry count for model calls |
 
