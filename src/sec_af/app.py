@@ -79,11 +79,16 @@ def _resolve_repo(repo_url: str) -> str:
     if os.path.isdir(repo_url):
         return str(Path(repo_url).resolve())
 
-    # GitHub/HTTP URL — clone to /workspaces/
+    # GitHub/HTTP URL — clone to configurable workspaces dir
     if repo_url.startswith(("https://", "http://", "git@")):
         repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
-        target_dir = f"/workspaces/{repo_name}"
-        os.makedirs("/workspaces", exist_ok=True)
+        workspaces_root = os.getenv("SEC_AF_WORKSPACES_DIR", "/workspaces")
+        try:
+            os.makedirs(workspaces_root, exist_ok=True)
+        except PermissionError:
+            workspaces_root = str(Path.home() / ".sec-af" / "workspaces")
+            os.makedirs(workspaces_root, exist_ok=True)
+        target_dir = str(Path(workspaces_root) / repo_name)
 
         if os.path.isdir(target_dir):
             # Already cloned — pull latest
