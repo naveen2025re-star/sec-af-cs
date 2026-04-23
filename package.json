@@ -3,8 +3,8 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "dev": "npm install --prefix frontend && npm run dev --prefix frontend",
+    "dev": "npm install --prefix frontend && npm run dev --prefix frontend -- --port 5173 --strictPort",
     "build": "npm install --prefix frontend && npm run build --prefix frontend",
-    "preview": "npm install --prefix frontend && npm run preview --prefix frontend"
+    "preview": "npm install --prefix frontend && npm run preview --prefix frontend -- --port 4173 --strictPort"
   }
 }
